@@ -1,0 +1,37 @@
+obj_dir/
+imgui.ini
+audio.wav
+*.log
+pc_profile_main.txt
+pc_profile_sub.txt
+*.bin
+*.bin.known
+
+# Generated screenshots and traces.
+shots/
+*.png
+.DS_Store
+
+# Local development files. Only what `make` and ./obj_dir/Vemu need is checked
+# in; the regression scripts, sweeps, baselines and testbenches stay on disk.
+sweep/
+shots-ref/
+shots-ref-77avemu/
+shots-baseline-*/
+gameplay-shots/
+audio/*.flac
+audio/*.raw
+*_tb.sv
+smem-test.sv
+dis6809_test.cpp
+run_tests.sh
+av_boot_test.sh
+gameplay.py
+sim/vinc/
+sim/imgui/Makefile
+sim/imgui/imgui_demo.cpp
+sim/imgui/implot_demo.cpp
+sim/imgui/imgui_plot.*
+sim/imgui/imgui_memory_editor.h
+sim/imgui/imgui_impl_dx11.*
+sim/imgui/imgui_impl_win32.*

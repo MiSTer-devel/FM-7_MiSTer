@@ -1,0 +1,72 @@
+db
+greybox_tmp
+incremental_db
+output_files
+simulation
+hc_output
+scaler
+hps_isw_handoff
+vip
+*_sim
+.qsys_edit
+PLLJ_PLLSPE_INFO.txt
+*.bak
+*.orig
+*.rej
+*.qdf
+*.rpt
+*.smsg
+*.summary
+*.done
+*.jdi
+*.pin
+*.sof
+*.qws
+*.ppf
+*.ddb
+build_id.v
+c5_pin_model_dump.txt
+*.sopcinfo
+*.csv
+*.f
+*.cmp
+*.sip
+*.spd
+*.bsf
+*~
+*.xml
+*_netlist
+*.cdf
+**/.DS_Store
+# Working trees that are not part of the core and must not be published here.
+#
+#   refs/      3.2 GB of vendored reference emulator sources (MAME,
+#              common-source-project, 77AVEMU) used only for comparison
+#   software/  commercial FM-7 disk and tape images
+#   verilog/   older scratch tree
+#
+# Several files in these exceed GitHub's 100 MB hard limit in any case.
+#
+# No trailing slash on the first two: in a git worktree they are SYMLINKS to the
+# main checkout, and a pattern ending in `/` does not match a symlink, so they
+# showed up as untracked there -- one `git add -A` away from being committed as
+# absolute-path links.
+refs
+software
+verilog/
+
+# Python bytecode
+__pycache__/
+
+# Hardware-harness screenshot output
+tools/hw/shots/
+
+# Agent worktrees and session scratch
+.claude/
+
+# Magazine scans and type-in work (hundreds of MB, and one 212 MB PDF that
+# exceeds GitHub's 100 MB hard limit). Kept on disk, never committed.
+magazines/
+
+# Local-only simulator files (sweeps, baselines, testbenches) are ignored in
+# verilator/.gitignore.
