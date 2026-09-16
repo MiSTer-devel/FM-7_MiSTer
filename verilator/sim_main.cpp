@@ -1018,6 +1018,14 @@ static uint16_t s_pc_lo = 0xffff, s_pc_hi = 0;
 // peripherals, which reads $ff for anything undecoded and so never traps.
 static long stat_m_in_ram = 0, stat_m_in_io = 0, stat_m_in_rom = 0;
 static uint8_t  kdata_seen = 0;
+// KSTROBEn is only the SUB CPU's route. A title that points $FD02 b0 at the
+// main CPU delivers through KEYINn instead and counts zero strobes, which reads
+// as "no key reached the machine" and is wrong. m132 -- the "a code is waiting"
+// latch -- rises on every delivered code whichever route it takes.
+static long    stat_keycodes = 0;
+static int     last_kpending = 0;
+static uint8_t last_keycode = 0;
+static bool    any_keycode = false;
 static std::map<uint16_t,long> m_pc_hist, s_pc_hist;
 
 static uint8_t last_m_ifetch = 0, last_s_ifetch = 0;
@@ -1148,9 +1156,10 @@ static void print_run_stats() {
 	       : stat_kbdenc_coding == 2 ? ", SCAN CODE MODE selected"
 	       : stat_kbdenc_coding == 1 ? ", FM16beta coding selected"
 	       : ", FM-7 coding selected");
-	printf("keyboard          : %ld strobes, codes seen $%02x%s\n",
-	       stat_kstrobes, kdata_seen,
-	       kdata_seen ? "" : "   (no key ever reached the latch)");
+	printf("keyboard          : %ld strobes (sub route), %ld codes delivered either"
+	       " route, last $%02x%s\n",
+	       stat_kstrobes, stat_keycodes, last_keycode,
+	       any_keycode ? "" : "   (no key ever reached the machine)");
 	if (!tape_path.empty()) {
 		printf("tape              : motor on %.1f%% of the run, %ld cassette-bit edges\n",
 		       main_time ? 100.0 * stat_tape_motor_cycles / main_time : 0.0,
@@ -1417,6 +1426,12 @@ static void sim_cycle() {
 	if (!top->dbg_kstroben && last_kstroben) stat_kstrobes++;
 	last_kstroben = top->dbg_kstroben;
 	kdata_seen |= top->dbg_kdata;
+	if (top->dbg_kpending && !last_kpending) {
+		stat_keycodes++;
+		last_keycode = top->dbg_kdata;   // kdata is registered a cycle before m132
+		any_keycode = true;
+	}
+	last_kpending = top->dbg_kpending;
 
 	if (top->dbg_tape_motor) stat_tape_motor_cycles++;
 	if (top->dbg_tape_in != last_tape_in) stat_tape_edges++;
