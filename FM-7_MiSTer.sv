@@ -91,12 +91,12 @@ localparam CONF_STR = {
   "T[8],Tape Rewind;",
   "O[9],Tape Audio,Off,On;",
   "O[11:10],Boot ROM,0 disk,1 alt,2 dos-a,3 empty;",
-  "O[12],Machine,FM-7,FM77AV (experimental);",
+  "O[12],Machine,FM-7,FM77AV;",
   // Which system ROM set to page in from the uploaded boot1.rom. Does nothing
   // unless that file is present -- with no file the machine runs the ROMs
   // baked into the .rbf, which are set 0's. Changing this resets the machine:
   // swapping the BASIC ROM under a running interpreter is not a thing.
-  "O[19],System ROM,Set 0,Set 1;",
+  "O[19],System ROM,Japanese,Spanish;",
   "-;",
   "O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
   "-;",
