@@ -6,8 +6,7 @@ display and the keyboard. It ran one of the strongest Japanese games libraries
 of the early 80s, and almost none of it ever left Japan.
 
 This core also runs the **FM77AV**, the 1985 successor with 4096 colours, a
-hardware drawing engine and a YM2203 — still marked experimental, but it boots
-and plays.
+hardware drawing engine and a YM2203.
 
 ![FM-7 keyboard map](docs/keyboard.svg)
 
@@ -19,7 +18,8 @@ and plays.
 * **OS-9 Level 1** boots to its shell (Boot ROM bank 2)
 * **Cassettes** — `.t77` tape images load and run
 * **Two floppy drives**, and multi-disk container images
-* **FM77AV mode** — 320×200 in 4096 colours, the drawing ALU, the analog palette
+* **FM77AV mode** — 320×200 in 4096 colours, the drawing ALU, the analog
+  palette, and the keyboard encoder including its make/break scan mode
 * **Sound** — PSG on the FM-7, YM2203 FM on the AV
 * **Joysticks**, two ports, two buttons each
 * **Kanji ROM**, the full 128 KB JIS set
@@ -168,6 +168,11 @@ keypad 8/4/6/2, such as Dig Dug. The FM-7 keyboard never reports a key being
 released, so in games like that a tap sets the direction and the character keeps
 going until you press another key.
 
+On the FM77AV, a title can switch the keyboard encoder into **scan-code mode**
+and then see key *releases* and the modifier keys themselves, which the FM-7's
+own code system cannot express at all. That is wired up, so AV titles written
+around make/break scancodes work.
+
 Held keys repeat the way the FM-7's own keyboard does: the first repeat after
 0.7 s, then every 0.07 s. Function keys don't repeat, and pressing or releasing
 Shift stops a repeat. **Left Ctrl + Shift + 0** turns key repeat off and
@@ -194,10 +199,9 @@ You can build your own ROM sets for other variants; the file format is in
 * **2DD floppies are not supported** — 2D only
 * Multi-disk containers can only reach disks in the **first 1 MB** of the file;
   beyond that the selector clamps to the last reachable disk
-* **FM77AV mode is experimental.** It boots and plays, but it is newer than the
-  FM-7 side and less tested
-* The **AV keyboard** is not wired up — AV-native titles that expect the AV's
-  own key encoder will not see keypresses
+* **The FM77AV side is younger than the FM-7 side.** 68 AV titles have been
+  swept against a reference emulator — 30 match it and the rest are blank on the
+  reference too — against 395 disks checked on the FM-7 side
 * One tape, **Crash Ball**, reports `Device I/O Error` after finding its header
 * **Xanadu Scenario II disk D** does not load
 * PSG pitch is about **0.4 of a semitone flat**, from an integer clock divider

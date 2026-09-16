@@ -12,8 +12,9 @@ shots/
 *.png
 .DS_Store
 
-# Local development files. Only what `make` and ./obj_dir/Vemu need is checked
-# in; the regression scripts, sweeps, baselines and testbenches stay on disk.
+# Local development files. The testbenches ARE checked in -- the Makefile
+# advertises a target for each and they need nothing but Verilator -- but the
+# regression scripts, sweeps and baselines need disk images and stay on disk.
 sweep/
 shots-ref/
 shots-ref-77avemu/
@@ -21,9 +22,6 @@ shots-baseline-*/
 gameplay-shots/
 audio/*.flac
 audio/*.raw
-*_tb.sv
-smem-test.sv
-dis6809_test.cpp
 run_tests.sh
 av_boot_test.sh
 gameplay.py

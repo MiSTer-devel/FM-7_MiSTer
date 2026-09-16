@@ -26,7 +26,10 @@ module KEYBOARD(
   input RPT_MODE_ON,
   input RPT_TIME_STB,
   input [7:0] RPT_DELAY,
-  input [7:0] RPT_INTERVAL
+  input [7:0] RPT_INTERVAL,
+  // FM77AV encoder $00 picks the key code system: 0 FM-7, 1 FM16beta, 2 scan.
+  // Always 0 on an FM-7, whose encoder does not exist.
+  input [1:0] KEY_CODING
 );
 
 reg press_btn;
@@ -721,6 +724,133 @@ always @* begin
 	end
 end
 
+// FM77AV SCAN CODE MODE.
+//
+// The whole point of it is that it reports key RELEASES, which the FM-7's own
+// code system cannot express at all -- the machine can only ever know the last
+// key pressed (FM-Techknow 5-1-1, p.113: to stop a character moving you press
+// another key). A scan code IS the key's physical number, the same "phy" the
+// tables above are transcribed against, with b7 set on the release.
+//
+// Both references do exactly that and deliver it through the ordinary key
+// register and interrupt, so nothing downstream changes: XM7's
+// keyboard_to_scan returns the make/break byte unchanged
+// (VM_keyboard.c.txt:2106-2126), and 77AVEMU sends AVKeyToScanCode[key] on a
+// press and the same value | $80 on a release (fm77avkeyboard.cpp:365,445).
+//
+// EVERY key reports here, the modifiers included -- the other half of what the
+// mode is for, since a title that scans the keyboard needs to see SHIFT itself.
+// Their numbers are CTRL $52, SHIFT left/right $53/$54, CAP $55, GRAPH $56,
+// KANA $5A and BREAK $5C (77AVEMU fm77avkeyboard.cpp:20-106).
+//
+// $00 means "this key has no scan code", which is safe because phy numbering
+// starts at $01 -- 77AVEMU tests it the same way (`if(0!=AVKeyToScanCode[...])`).
+// The FM-7's DUP key, the JIS ro key and the keypad's '=' and ',' are the gaps:
+// no PS/2 key here produces them.
+reg [6:0] scan;
+always @* begin
+  scan = 7'h00;
+  case (code)
+      9'h076: begin scan = 7'h01; end // ESC
+      9'h016: begin scan = 7'h02; end // 1
+      9'h01e: begin scan = 7'h03; end // 2
+      9'h026: begin scan = 7'h04; end // 3
+      9'h025: begin scan = 7'h05; end // 4
+      9'h02e: begin scan = 7'h06; end // 5
+      9'h036: begin scan = 7'h07; end // 6
+      9'h03d: begin scan = 7'h08; end // 7
+      9'h03e: begin scan = 7'h09; end // 8
+      9'h046: begin scan = 7'h0a; end // 9
+      9'h045: begin scan = 7'h0b; end // 0
+      9'h04e: begin scan = 7'h0c; end // -
+      9'h055: begin scan = 7'h0d; end // ^
+      9'h05d: begin scan = 7'h0e; end // YEN
+      9'h066: begin scan = 7'h0f; end // BS
+      9'h00d: begin scan = 7'h10; end // TAB
+      9'h015: begin scan = 7'h11; end // Q
+      9'h01d: begin scan = 7'h12; end // W
+      9'h024: begin scan = 7'h13; end // E
+      9'h02d: begin scan = 7'h14; end // R
+      9'h02c: begin scan = 7'h15; end // T
+      9'h035: begin scan = 7'h16; end // Y
+      9'h03c: begin scan = 7'h17; end // U
+      9'h043: begin scan = 7'h18; end // I
+      9'h044: begin scan = 7'h19; end // O
+      9'h04d: begin scan = 7'h1a; end // P
+      9'h054: begin scan = 7'h1b; end // @
+      9'h05b: begin scan = 7'h1c; end // [
+      9'h05a: begin scan = 7'h1d; end // RET
+      9'h01c: begin scan = 7'h1e; end // A
+      9'h01b: begin scan = 7'h1f; end // S
+      9'h023: begin scan = 7'h20; end // D
+      9'h02b: begin scan = 7'h21; end // F
+      9'h034: begin scan = 7'h22; end // G
+      9'h033: begin scan = 7'h23; end // H
+      9'h03b: begin scan = 7'h24; end // J
+      9'h042: begin scan = 7'h25; end // K
+      9'h04b: begin scan = 7'h26; end // L
+      9'h04c: begin scan = 7'h27; end // ;
+      9'h052: begin scan = 7'h28; end // :
+      9'h00e: begin scan = 7'h29; end // ]
+      9'h01a: begin scan = 7'h2a; end // Z
+      9'h022: begin scan = 7'h2b; end // X
+      9'h021: begin scan = 7'h2c; end // C
+      9'h02a: begin scan = 7'h2d; end // V
+      9'h032: begin scan = 7'h2e; end // B
+      9'h031: begin scan = 7'h2f; end // N
+      9'h03a: begin scan = 7'h30; end // M
+      9'h041: begin scan = 7'h31; end // ,
+      9'h049: begin scan = 7'h32; end // .
+      9'h04a: begin scan = 7'h33; end // /
+      9'h029: begin scan = 7'h35; end // SPACE
+      9'h07c: begin scan = 7'h36; end // KP*
+      9'h14a: begin scan = 7'h37; end // KP/
+      9'h079: begin scan = 7'h38; end // KP+
+      9'h07b: begin scan = 7'h39; end // KP-
+      9'h06c: begin scan = 7'h3a; end // KP7
+      9'h075: begin scan = 7'h3b; end // KP8
+      9'h07d: begin scan = 7'h3c; end // KP9
+      9'h06b: begin scan = 7'h3e; end // KP4
+      9'h073: begin scan = 7'h3f; end // KP5
+      9'h074: begin scan = 7'h40; end // KP6
+      9'h069: begin scan = 7'h42; end // KP1
+      9'h072: begin scan = 7'h43; end // KP2
+      9'h07a: begin scan = 7'h44; end // KP3
+      9'h15a: begin scan = 7'h45; end // KPRET
+      9'h070: begin scan = 7'h46; end // KP0
+      9'h071: begin scan = 7'h47; end // KP.
+      9'h170: begin scan = 7'h48; end // INS
+      9'h17d: begin scan = 7'h49; end // EL=PgUp
+      9'h17a: begin scan = 7'h4a; end // CLS=PgDn
+      9'h171: begin scan = 7'h4b; end // DEL
+      9'h175: begin scan = 7'h4d; end // UP
+      9'h16c: begin scan = 7'h4e; end // HOME
+      9'h16b: begin scan = 7'h4f; end // LEFT
+      9'h172: begin scan = 7'h50; end // DOWN
+      9'h174: begin scan = 7'h51; end // RIGHT
+      9'h014: begin scan = 7'h52; end // ctrl
+      9'h012: begin scan = 7'h53; end // shift left
+      9'h059: begin scan = 7'h54; end // shift right
+      9'h058: begin scan = 7'h55; end // cap
+      9'h011: begin scan = 7'h56; end // graph = alt left
+      9'h111: begin scan = 7'h5a; end // kana = alt right
+      9'h114: begin scan = 7'h5c; end // break = ctrl right
+      9'h005: begin scan = 7'h5d; end // PF1
+      9'h006: begin scan = 7'h5e; end // PF2
+      9'h004: begin scan = 7'h5f; end // PF3
+      9'h00c: begin scan = 7'h60; end // PF4
+      9'h003: begin scan = 7'h61; end // PF5
+      9'h00b: begin scan = 7'h62; end // PF6
+      9'h083: begin scan = 7'h63; end // PF7
+      9'h00a: begin scan = 7'h64; end // PF8
+      9'h001: begin scan = 7'h65; end // PF9
+      9'h009: begin scan = 7'h66; end // PF10
+    endcase
+end
+wire scan_mode = (KEY_CODING == 2'd2);
+wire scan_hit  = (scan != 7'h00);
+wire scan_pf   = (scan >= 7'h5d);   // PF keys still do not repeat (1.9.4)
+
 always @(posedge CLKSYS) begin
 	reg old_state;
 
@@ -915,8 +1045,13 @@ always @(posedge CLKSYS) begin
 
     if (key_release) begin
       last_press_v <= 1'b0;
-      // A release leaves kdata alone: $FD01 keeps the last code. See the
-      // declaration of kdata for why.
+      // In scan mode the release is a code of its own. In the FM-7 code system
+      // it is nothing at all, and kdata keeps the last code: $FD01 holds. See
+      // the declaration of kdata for why.
+      if (scan_mode && scan_hit) begin
+        { P0, kdata } <= { 1'b0, 1'b1, scan };   // b7 set = break
+        key_stb       <= 1'b1;
+      end
       if (is_shift || (code == rpt_code)) begin
         rpt_run  <= 1'b0;
         rpt_pend <= 1'b0;
@@ -928,9 +1063,24 @@ always @(posedge CLKSYS) begin
       // Every press ends a running repeat; only a key with a code starts one.
       rpt_run  <= 1'b0;
       rpt_pend <= 1'b0;
-      if (is_modifier) ;
-      else if (rpt_key_on)  rpt_en <= 1'b1;
+      // CTRL+SHIFT+0/1 is a function of the keyboard itself, so it answers in
+      // any code system and sends nothing, as XM7 does (keyboard_make,
+      // VM_keyboard.c.txt:2627-2640) -- checked before the mode split because
+      // in scan mode the key would otherwise report and never reach here.
+      if (rpt_key_on)       rpt_en <= 1'b1;
       else if (rpt_key_off) rpt_en <= 1'b0;
+      else if (scan_mode) begin
+        if (scan_hit) begin
+          { P0, kdata }         <= { 1'b0, 1'b0, scan };
+          key_stb               <= 1'b1;
+          rpt_code              <= code;
+          { rpt_P0, rpt_kdata } <= { 1'b0, 1'b0, scan };
+          rpt_run               <= rpt_en & ~scan_pf;
+          rpt_first             <= 1'b1;
+          rpt_ms                <= 12'd0;
+        end
+      end
+      else if (is_modifier) ;
       else if (lk_hit) begin
         { P0, kdata }         <= { lk_P0, lk_kdata };
         key_stb               <= 1'b1;

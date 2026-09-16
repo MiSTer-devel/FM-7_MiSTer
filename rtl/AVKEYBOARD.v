@@ -46,7 +46,10 @@ module AVKEYBOARD(
   output reg       RPT_MODE_ON,
   output reg       RPT_TIME_STB,
   output reg [7:0] RPT_DELAY,
-  output reg [7:0] RPT_INTERVAL
+  output reg [7:0] RPT_INTERVAL,
+  // $00 picks the key code system, and the codes themselves are KEYBOARD.v's
+  // job -- scan mode is the one titles switch to for key releases.
+  output [1:0] CODING
 );
 
 wire io_window = machine_av && (SADDRBUS[15:8] == 8'hd4);
@@ -71,6 +74,8 @@ wire write_stb = write && !write_d;
 
 reg [7:0] command;
 reg [7:0] mode;
+// The $00 case accepts 0, 1 and 2 only, so two bits carry every value it holds.
+assign CODING = mode[1:0];
 reg [7:0] leds;
 reg [7:0] screen_mode;
 reg [7:0] brightness;

@@ -1005,6 +1005,12 @@ static long stat_s_halt_cycles = 0;
 static long stat_kstrobes  = 0;
 static long stat_tape_edges = 0, stat_tape_motor_cycles = 0;
 static long stat_d40a_rd = 0, stat_d40a_wr = 0;
+// FM77AV keyboard encoder traffic. "Does any title actually drive the encoder,
+// and does it ask for scan codes?" is otherwise unanswerable from a run: $D431
+// is on the sub bus and no other trace covers it.
+static long stat_kbdenc_wr = 0;
+static int  stat_kbdenc_coding = -1;   // last value a $00 command selected
+static int  kbdenc_coding_next = 0;
 static uint16_t m_pc_lo = 0xffff, m_pc_hi = 0;
 static uint16_t s_pc_lo = 0xffff, s_pc_hi = 0;
 // Where the main CPU is executing, bucketed. $fd00-$fdff is the I/O window --
@@ -1137,6 +1143,11 @@ static void print_run_stats() {
 	       (psg_bc_seen&4)?"2 ":"", (psg_bc_seen&8)?"3 ":"");
 	printf("PSG channels      : dac_a max %u  dac_b max %u  dac_c max %u\n",
 	       dac_a_max, dac_b_max, dac_c_max);
+	printf("kbd encoder       : %ld $D431 writes%s\n", stat_kbdenc_wr,
+	       stat_kbdenc_coding < 0 ? ", no coding selected"
+	       : stat_kbdenc_coding == 2 ? ", SCAN CODE MODE selected"
+	       : stat_kbdenc_coding == 1 ? ", FM16beta coding selected"
+	       : ", FM-7 coding selected");
 	printf("keyboard          : %ld strobes, codes seen $%02x%s\n",
 	       stat_kstrobes, kdata_seen,
 	       kdata_seen ? "" : "   (no key ever reached the latch)");
@@ -1324,6 +1335,12 @@ static void sim_cycle() {
 		shadow_s.mem[pre_s_addr]   = pre_s_rw ? pre_s_din : pre_s_dout;
 		shadow_s.known[pre_s_addr] = 1;
 		if (pre_s_addr == 0xd40a) { if (pre_s_rw) stat_d40a_rd++; else stat_d40a_wr++; }
+		// The sub I/O page aliases every 64 bytes, so match the offset, not $D431.
+		if ((pre_s_addr & 0xff00) == 0xd400 && (pre_s_addr & 0x3f) == 0x31 && !pre_s_rw) {
+			stat_kbdenc_wr++;
+			if (kbdenc_coding_next) { stat_kbdenc_coding = pre_s_dout; kbdenc_coding_next = 0; }
+			else if (pre_s_dout == 0x00) kbdenc_coding_next = 1;   // $00 = set coding
+		}
 		// No mmap column here: the sub CPU's selects come from SDECODE.v and are
 		// not the same set. The shared-RAM window is what this is usually for.
 		if (pre_s_addr >= trace_smem_lo && pre_s_addr <= trace_smem_hi &&

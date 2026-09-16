@@ -15,6 +15,7 @@ module keyboard_tb;
   reg        rfd00n = 1'b1, rfd01n = 1'b1;
   reg        rpt_mode_stb = 1'b0, rpt_mode_on = 1'b1, rpt_time_stb = 1'b0;
   reg  [7:0] rpt_delay = 8'd0, rpt_interval = 8'd0;
+  reg  [1:0] key_coding = 2'd0;   // FM77AV encoder $00: 0 FM-7, 2 scan codes
   wire [7:0] mkdata, skdata;
   wire       kstroben, breakn, lpmaskn, tmmask, keyinn;
 
@@ -25,7 +26,8 @@ module keyboard_tb;
     .WFD02n(1'b1), .KSTROBEn(kstroben), .BREAKn(breakn), .fm8_switch(1'b1),
     .LPMASKn(lpmaskn), .TMMASK(tmmask), .KEYINn(keyinn),
     .RPT_MODE_STB(rpt_mode_stb), .RPT_MODE_ON(rpt_mode_on),
-    .RPT_TIME_STB(rpt_time_stb), .RPT_DELAY(rpt_delay), .RPT_INTERVAL(rpt_interval)
+    .RPT_TIME_STB(rpt_time_stb), .RPT_DELAY(rpt_delay), .RPT_INTERVAL(rpt_interval),
+    .KEY_CODING(key_coding)
   );
 
   // One count per code delivered, key press or repeat.
@@ -89,6 +91,25 @@ module keyboard_tb;
       if (strobes != n0 || v !== was)
         fail($sformatf("%s: %0d code(s), $FD01 %03x -> %03x, want none",
                        what, strobes - n0, was, v));
+    end
+  endtask
+
+  // Scan mode: the make code is the key's physical number, the break the same
+  // with b7 set, and both are delivered like any other key code.
+  task automatic expect_scan(input [8:0] code, input [6:0] want, input string what);
+    begin
+      n0 = strobes;
+      ev(code, 1'b1);
+      read_fd(v);
+      if (strobes != n0 + 1 || v !== {2'b00, want})
+        fail($sformatf("%s make: %0d code(s), $FD00b7:$FD01 = %03x, want 1 and %03x",
+                       what, strobes - n0, v, {2'b00, want}));
+      n0 = strobes;
+      ev(code, 1'b0);
+      read_fd(v);
+      if (strobes != n0 + 1 || v !== {1'b0, 1'b1, want})
+        fail($sformatf("%s break: %0d code(s), $FD00b7:$FD01 = %03x, want 1 and %03x",
+                       what, strobes - n0, v, {1'b0, 1'b1, want}));
     end
   endtask
 
@@ -156,6 +177,17 @@ module keyboard_tb;
     ev(SHIFT, 1'b0);
     tap(KANA);                                   // and off
     expect_key(KEY_A, 9'h061, "a after KANA off");
+
+    // FM77AV scan code mode. A release reports, which the FM-7 code system
+    // cannot do at all, and the modifier keys report as themselves.
+    key_coding = 2'd2;
+    expect_scan(KEY_A, 7'h1e, "scan A");
+    expect_scan(F1,    7'h5d, "scan PF1");
+    expect_scan(9'h075, 7'h3b, "scan keypad 8");
+    expect_scan(SHIFT, 7'h53, "scan SHIFT (a modifier reports)");
+    expect_scan(CTRL,  7'h52, "scan CTRL");
+    key_coding = 2'd0;
+    expect_key(KEY_A, 9'h061, "a again once the coding is back to FM-7");
 
     // $FD01 keeps the last code after a release (FM-Techknow 5-1-5, p.118) --
     // expect_key reads it after the release -- but a reset puts back the

@@ -36,6 +36,25 @@ minute. The cost is dominated by clocking the whole design at 48 MHz `clk_sys`;
 faking that would change the phase relationship between the two CPUs and the
 video chain, which is exactly what the core depends on.
 
+## Directed tests
+
+Small testbenches that need nothing but Verilator -- no ROMs, no disk images, no
+built `Vemu`. Each builds and runs itself:
+
+```sh
+make keyboard-test     # the key tables, $FD01 across release and reset,
+                       # auto-repeat, and the FM77AV scan-code mode
+make avkeyboard-test   # the FM77AV encoder's command/status pair at $D431/$D432
+make avmem-test        # AV memory paths        make crtram-test    # CRT RAM
+make smem-test         # AV character generator make pal-test       # analog palette
+make avpixel-test      # 12-plane pixel combine make avhdraw-test   # drawing ALU
+make mb60h010-test     # AV raster address      make sound-test     # PSG / YM2203
+make distest           # the 6809 disassembler, no Verilator at all
+```
+
+A testbench reports every failing check and then exits non-zero, so one run
+shows everything a change broke.
+
 ## Headless use
 
 ```sh
@@ -176,6 +195,11 @@ How to read it:
   with the identity while `RESETBn` is low.
 
 ## Regression sweep
+
+**`run_tests.sh` and its `shots-ref/` baseline are not part of this
+repository** -- the sweep boots real disk and tape images and compares against
+screenshots of them, neither of which ships here. The directed tests above are
+what this repository can run on its own.
 
 ```sh
 ./run_tests.sh              # all tests
