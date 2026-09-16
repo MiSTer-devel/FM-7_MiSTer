@@ -170,8 +170,8 @@ going until you press another key.
 
 On the FM77AV, a title can switch the keyboard encoder into **scan-code mode**
 and then see key *releases* and the modifier keys themselves, which the FM-7's
-own code system cannot express at all. That is wired up, so AV titles written
-around make/break scancodes work.
+own code system cannot express at all. The encoder and that mode are
+implemented, which is what AV titles written around make/break scancodes need.
 
 Held keys repeat the way the FM-7's own keyboard does: the first repeat after
 0.7 s, then every 0.07 s. Function keys don't repeat, and pressing or releasing
