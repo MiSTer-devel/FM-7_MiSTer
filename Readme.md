@@ -80,6 +80,24 @@ wants `LOADM"NAME",,R`, and `D` is not something you load yourself.
 A disk that does nothing at all usually wants a different **Boot ROM** —
 try **2 dos-a**, which is the one OS-9 disks need.
 
+### A disk that is really several disks
+
+Some `.d77` and `.d88` files are **containers**: two to six complete disks in
+one file, which is how many multi-disk games were dumped. Mount one the usual
+way and the drive presents the first disk inside it.
+
+When the game asks for the next disk, open the OSD and set **Disk 1 image** to
+`2`, `3`, and so on. That re-scans the drive, which is exactly what swapping a
+disk does — so do *not* reset afterwards, or you will restart the game.
+**Disk 2 image** does the same for the second drive, and the two selectors are
+independent. On an ordinary single-disk file the selector does nothing: only
+`1` is there.
+
+One limit worth knowing before you go hunting for a fault: only the disks lying
+in the **first 1 MB** of the file can be reached. Past that the selector clamps
+to the last one it can get to, so the later disks of a large container are out
+of reach for now.
+
 ### A tape
 
 1. **Load Tape** in the OSD, and pick a `.t77`.
