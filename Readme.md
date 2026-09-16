@@ -52,19 +52,55 @@ is only needed for the Spanish machine — see [System ROM sets](#spanish-secoin
 
 Load the core with no disk and you get F-BASIC. Type `print 1+1`, press Enter.
 
-To run a game, open the OSD (**F12**), pick **Mount Disk 1**, choose a `.d77`,
-then **Reset**. Most disks boot on their own from there.
+Quotes are **Shift+2** on this keyboard, not Shift+`'` — every command below
+needs them, so glance at [Keyboard](#keyboard) before typing your first one.
 
-A few things that catch people out:
+### A disk
 
-* **Mounting a disk does not reboot the machine.** That is deliberate — games
-  that ask you to swap disks mid-play would restart otherwise. Hit **Reset**
-  after mounting if you want to boot from it.
-* **Some disks need a different Boot ROM.** If a disk sits there doing nothing,
-  try **Boot ROM → 2 dos-a**. OS-9 disks need this one.
-* **Tapes are slow, because tapes were slow.** A `.t77` takes around six
-  minutes of machine time to load. Mount it, type `run""`, and wait. Turn on
-  **Tape Audio** if you want to hear it working.
+1. **F12** for the OSD, then **Mount Disk 1** — that is the machine's drive 0.
+2. Pick a `.d77` or `.d88`.
+3. **Reset**.
+
+Mounting alone does not reboot, deliberately: a game that asks you to swap
+disks mid-play would restart otherwise. Most disks boot by themselves once you
+reset. If one stops at a `Ready` prompt instead, look at what is on it and
+start the program yourself:
+
+```
+FILES"0:"             list drive 0
+RUN"NAME"             start a BASIC program
+LOADM"NAME",,R        load and run a machine-code program
+```
+
+`FILES"1:"` lists drive 1, which the OSD calls **Mount Disk 2**. Each entry in
+the listing carries its type: `B` is a BASIC program, `A` a BASIC program saved
+as plain text, `M` machine code, `D` data. `B` and `A` want `RUN"NAME"`, `M`
+wants `LOADM"NAME",,R`, and `D` is not something you load yourself.
+
+A disk that does nothing at all usually wants a different **Boot ROM** —
+try **2 dos-a**, which is the one OS-9 disks need.
+
+### A tape
+
+1. **Load Tape** in the OSD, and pick a `.t77`.
+2. Type `run""` and press Enter.
+3. Wait: `Searching`, then `Found: NAME`, then the program starts.
+
+Tapes load at the speed cassettes really ran — a couple of minutes for a small
+title, closer to six for a big one. **Tape Audio** lets you hear it working,
+and **Tape Rewind** puts you back at the start, which you need before loading
+anything a second time.
+
+Some tapes hold a machine-code program rather than a BASIC one; those want
+
+```
+LOADM"",,R
+```
+
+instead of `run""`. Dumps often say which in the file name — Gaming
+Alexandria's, for instance, end in `-loadm`.
+
+**Right Ctrl is BREAK**, which stops a running BASIC program.
 
 ## The OSD
 
@@ -76,7 +112,7 @@ A few things that catch people out:
 | **Tape Rewind** | rewind the cassette to the start |
 | **Tape Audio** | hear the tape while it loads |
 | **Boot ROM** | `0 disk` boots floppies, `2 dos-a` boots OS-9 |
-| **Machine** | FM-7, or FM77AV (experimental) |
+| **Machine** | FM-7, or FM77AV |
 | **System ROM** | Japanese or Spanish system ROMs — see below |
 | **Aspect ratio** | original 4:3, or fill the screen |
 
@@ -129,7 +165,7 @@ the joystick ports at all, so if a game ignores your pad it is probably the game
 
 Secoinsa built and sold the FM-7 in Spain under licence, with a Latin character
 set in place of katakana and a slightly different F-BASIC. Install `boot1.rom`
-and set **System ROM** to **Set 1** to run it — `Ñ`, `Ç` and `¿` appear where
+and set **System ROM** to **Spanish** to run it — `Ñ`, `Ç` and `¿` appear where
 katakana would be.
 
 You can build your own ROM sets for other variants; the file format is in
@@ -162,6 +198,5 @@ ROM images are not GPL and belong to their respective owners.
 
 ---
 
-*Working on the core itself? [DEVELOPING.md](DEVELOPING.md) is the developer
-reference — build, simulate, test and verify. Read
-[docs/REFERENCE.md](docs/REFERENCE.md) before changing anything.*
+*Working on the core itself? [verilator/](verilator/) builds a headless
+simulator that boots the same ROMs — see its README.*
