@@ -276,7 +276,7 @@ core with hierarchical references in `sim.v`. Nothing in `sim.v` drives the
 core, and there is no `--public-flat-rw`.
 
 Separately, *using* the harness turned up four real core bugs, which are now
-fixed in `rtl/` and written up in `../TODO.md`: the `$fdxx` read strobe timing
+fixed in `rtl/`: the `$fdxx` read strobe timing
 (`core.v`), three modules latching the read bus on writes (`core.v`), the
 character-cell shift-register load phase (`MB60H010.v`), and the boot ROM
 select (`ROMS.v`).
@@ -285,27 +285,10 @@ Note that `rtl/MRAM.v`'s `` `ifdef VERILATOR `` branch (generic `ram` instead of
 the Quartus `altsyncram` wrapper) and the trailing-comma fix in `ROMS.v` were
 already in the working tree; the sim needs both.
 
-## Current state of the core
+## One harness trap worth knowing
 
-The core boots to a usable prompt:
-
-```
-FUJITSU F-BASIC Version 3.0
-Copyright (C) 1981 By FUJITSU/MICROSOFT
-30530 Bytes Free
-
-Ready
-```
-
-Typed keys reach the machine correctly (the sub CPU takes a FIRQ per key and
-reads the right ASCII from `$d401`) but do not echo — the main CPU stops writing
-the shared-RAM aperture after boot, so the sub redraws a stale buffer and every
-keystroke prints "Copyright". See `../TODO.md`, P0-4.
-
-Getting this far took five `rtl/` fixes and one fix in this harness, all written
-up in `../TODO.md`. The harness one is worth knowing if you touch `sim.v`:
-`ce_pix` is `SFTCLK`, which `clk_en` drives as a real 16 MHz clock (high for two
-of every three `clk_sys` cycles), **not** a one-cycle enable. Passing it straight
+`ce_pix` is `SFTCLK`, which `clk_en` drives as a real 16 MHz clock — high for two
+of every three `clk_sys` cycles — **not** a one-cycle enable. Passing it straight
 through as `CE_PIXEL` makes `sim_main` sample every pixel twice and doubles the
 picture horizontally.
 
