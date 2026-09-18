@@ -16,25 +16,49 @@ Modelled on the RX-78 `vsim/` setup, sharing its `sim/` framework (imgui + SDL2 
 ## Build
 
 ```sh
-cd vsim
+cd verilator
 make            # -> ./obj_dir/Vemu
 make run        # build + launch the windowed sim
 make test       # build + headless regression sweep
 make distest    # disassembler self-check (standalone, ~1s)
 ```
 
-Needs Verilator 5.x and SDL2 (`brew install verilator sdl2`). Both CPUs are
-`mc6809i` (Verilog), so there is no VHDL and no ghdl step.
+Needs Verilator and SDL2 (`brew install verilator sdl2`). Verilator 4.204 and
+5.x both build it -- the 4.x differences (no `WIDTHEXPAND` lint code, no
+`Vemu___024root.h`) are absorbed by the `VL_ROOT()` shim in `sim_main.cpp`.
+Both CPUs are `mc6809i` (Verilog), so there is no VHDL and no ghdl step.
 
 `roms` and `audio` here are symlinks to `../rtl/roms` and `../audio`, because
 `rtl/rom.v` and `rtl/pcm.v` do literal `$readmemh("./roms/…")` /
 `$readmemb("./audio/…")` relative to the working directory. **Run the binary from
 this directory.**
 
-Speed is around 6 simulated frames per second, so a 400-frame run takes about a
-minute. The cost is dominated by clocking the whole design at 48 MHz `clk_sys`;
-faking that would change the phase relationship between the two CPUs and the
-video chain, which is exactly what the core depends on.
+Speed is **about 1 simulated frame per second** on a Ryzen-class desktop -- a
+400-frame run takes seven minutes and a 16,000-frame run takes four and a half
+hours. (Superseded claim: *"around 6 frames per second, so a 400-frame run takes
+about a minute."*) The cost is dominated by clocking the whole design at 48 MHz
+`clk_sys`; faking that would change the phase relationship between the two CPUs
+and the video chain, which is exactly what the core depends on.
+
+**Do not reach for `--threads`. It is 9x SLOWER and it changes the answer.**
+Measured on the same 400-frame FM77AV disk run, one build with and one without:
+
+| | default | `--threads 8` |
+|---|---|---|
+| wall | **7 m 13 s** | **68 m 02 s** |
+| CPU time | 7 m 13 s | 9 h 04 m |
+| main 6809 | 7740 instr/frame | 9410 |
+| sub 6809 | **679** instr/frame | **8752** |
+| I/O cycles (`$fdxx`) | 693,120 | 23,239 |
+
+The wall-clock loss is the usual story -- one 48 MHz clock drives everything, so
+the mtasks come out tiny and the per-cycle barrier costs more than the work it
+spreads. **The divergence is the part that matters:** the sub CPU retires
+thirteen times as many instructions and the I/O count falls by 30x, so the
+threaded model is simulating a different machine, not the same one faster. This
+design settles iteratively -- note `--converge-limit 6000` in the Makefile --
+and threaded scheduling does not reproduce that ordering. Every trace, profile
+and screenshot from a threaded build would be quietly wrong.
 
 ## Directed tests
 
@@ -66,8 +90,12 @@ shows everything a change broke.
     --screenshot 450 --stop-at-frame 470
 
 # mount a tape and ask F-BASIC to load it
-./obj_dir/Vemu --headless --tape ../../77AVEMU/diskimage/2018_FM7DEMO_CaptainYS_V1.T77 \
+./obj_dir/Vemu --headless --tape /path/to/game.t77 \
     --key 400:load\"\" --key 500:@RETURN --stop-at-frame 3000
+
+# boot an FM77AV disk in both drives and sample the intro
+./obj_dir/Vemu --headless --machine fm77av --disk "Disk A.d77" --disk1 "Disk B.d77" \
+    --screenshot 400,900,1500 --stop-at-frame 2000
 ```
 
 `--help` lists everything. The options that matter:
@@ -75,9 +103,12 @@ shows everything a change broke.
 | Option | Notes |
 |---|---|
 | `--tape <file.t77>` | Loaded through the real `ioctl` path at index 1, exactly as `hps_io` does for `F1,t77`, into the behavioural SDRAM and played by `rtl/t77_decode.v`. |
+| `--disk <file>` / `--disk1 <file>` | Mount a `.d77`/`.d88` in drive 0 / drive 1, through the same `sd_rd`/`sd_ack` block-device interface `hps_io` drives on hardware (`verilator/sim/sim_blkdevice.cpp`). Writes are discarded unless `--disk-writable`. |
+| `--disk-index <0-7>` / `--disk1-index <0-7>` | Which sub-disk of a multi-disk container that drive presents -- the `Disk 1 image` / `Disk 2 image` OSD rows. |
+| `--romset <file>` / `--romset-sel <0\|1>` | Load a `boot1.rom` system-ROM set and pick set 0 (Japanese) or 1 (Spanish), matching the `System ROM` OSD row. |
 | `--tape-audio` / `--rewind-at-frame <n>` | The `Tape Audio` and `Tape Rewind` OSD bits. |
 | `--bootrom <0-3>` | The `BootROM` OSD bits: 0 = F-BASIC, 1-3 = the DOS boot ROMs. |
-| `--machine <fm7\|fm77av>` | Machine-family selector matching the OSD. `fm77av` is a bring-up gate and currently holds the core in reset until the AV backend is implemented. |
+| `--machine <fm7\|fm77av>` | Machine-family selector matching the OSD. (Superseded claim: *"`fm77av` is a bring-up gate and currently holds the core in reset until the AV backend is implemented"*. It selects the real AV family now -- memory map, video, sub-I/O and the YM2203 -- and AV disks boot under it. An AV title run without it reports a uniform "nothing boots", which reads as a core failure rather than as the wrong switch.) |
 | `--key <frame>:<text>` | Types text, or `@NAME` for `SPACE RETURN TAB BS ESC CAPS UP DOWN LEFT RIGHT HOME INS DEL CTRL SHIFT GRAPH KANA BREAK F1`..`F10`, and the keypad `KP0`..`KP9 KPDOT KPPLUS KPMINUS KPSTAR KPSLASH KPENTER`. `@KP8` is not `@UP`: the same scancode, without the E0 prefix. |
 | `--key-hold <frames>` | Frames to hold each key, default 6. |
 | `--key-typematic <d>:<i>` | While a key is held, resend its make code after *d* frames and then every *i*, as a PC keyboard's typematic does. The core must ignore these -- `KEYBOARD.v` repeats at the FM-7's own 0.7 s / 0.07 s -- so a 120-frame hold still delivers 20 keystrokes with or without it. On MiSTer this tests a guard, not a live path: Main_MiSTer does not forward key repeats to a core that leaves `hps_io`'s `PS2WE` unset, as this one does (`user_io.cpp:4070`). |
@@ -90,7 +121,7 @@ shows everything a change broke.
 | `--joystick <frame>:<buttons>[:<hold>]` | Press stick 1 buttons (`up down left right a b fire none`, `+`-joined). **`--joystick-hold` applies only to options after it** — use the per-action `<hold>` instead. |
 | `--wav <file>` | Capture `AUDIO_L`/`AUDIO_R` to a 16-bit stereo RIFF/WAVE at 44100 Hz. Works headless — `audio.Clock()` is otherwise skipped without a window, which is why the sound path went unverified for so long. |
 | `--trace-av-video [file]` | FM77AV video writes: main aperture, sub VRAM, drawing ALU, MMR sub-I/O, `$D4xx`. Off by default; it is per-bus-cycle noisy. |
-| `--av-dump-frame <n>` + `FM7_VRAM_DUMP=<file>` | Write the 12 FM77AV VRAM planes at frame *n*, in the 77AVEMU reference layout. See `docs/TESTING.md`. |
+| `--av-dump-frame <n>` + `FM7_VRAM_DUMP=<file>` | Write the 12 FM77AV VRAM planes at frame *n*, in the reference emulator's plane layout, for byte-for-byte VRAM comparison. |
 
 (Superseded claim: *"there is no joystick option because the core has no
 joystick input — `core.v` takes `ps2_key` and nothing else"*. Both sticks are
@@ -226,7 +257,7 @@ All of them are commented at the point they occur in `sim.v`:
 - `clk_sys` is driven by `sim_main` instead of the PLL. The PLL's `outclk_0` is
   48.000 MHz, so this is exact, not an approximation.
 - `rtl/sdram.sv` (the real controller, with `SDRAM_*` pins) is replaced by the
-  behavioural model in `vsim/rtl/sdram.sv`. Same client interface, same
+  behavioural model in `verilator/rtl/sdram.sv`. Same client interface, same
   edge-detected requests and read latency.
 - The tape download writes bytes (`wtbt=00`, 8-bit `ioctl_dout`); the FPGA build
   uses `hps_io #(.WIDE(1))` and 16-bit writes. The bytes land at the same
@@ -292,5 +323,5 @@ of every three `clk_sys` cycles — **not** a one-cycle enable. Passing it strai
 through as `CE_PIXEL` makes `sim_main` sample every pixel twice and doubles the
 picture horizontally.
 
-`shots-ref/` is the booting baseline. Re-baseline with
-`./run_tests.sh && cp -r shots shots-ref` whenever you intend a visual change.
+(`run_tests.sh` and `shots-ref/` are the local-only sweep described above; they
+are not in this repository.)
