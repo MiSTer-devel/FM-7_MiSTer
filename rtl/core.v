@@ -1051,6 +1051,16 @@ AVKEYBOARD u_AVKEYBOARD(
   .SEL        ( AV_KBD_sel   ),
   .MMR_ADDR   ( AV_SUBIO_ADDR ),
   .MMR_DOUT   ( AV_KBD_mmr_dout ),
+  // The write and read halves of the same aperture. AVHDRAW already gets these
+  // implicitly, because core.v hands it the MUXED bus (SREGADDR/SREGDIN/
+  // SREGWEn) rather than the sub CPU's own -- see its instantiation above.
+  // AVKEYBOARD was left on the raw sub bus, so main-CPU commands never reached
+  // it. Passed as separate ports rather than by switching this module to the
+  // muxed bus as well: its queue pop keys off the sub's SRWB, which would then
+  // fire on main-side WRITES too and eat a reply byte per command.
+  .MMR_WR     ( AV_SUBIO_MMR  ),
+  .MMR_DIN    ( AV_SUBIO_DIN  ),
+  .MMR_RD     ( AV_SUBIO_ADDRSEL & ~AV_SUBIO_WRITE ),
   .RPT_MODE_STB ( AV_RPT_MODE_STB ),
   .RPT_MODE_ON  ( AV_RPT_MODE_ON  ),
   .RPT_TIME_STB ( AV_RPT_TIME_STB ),

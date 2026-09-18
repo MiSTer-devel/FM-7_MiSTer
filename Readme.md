@@ -201,11 +201,23 @@ You can build your own ROM sets for other variants; the file format is in
   beyond that the selector clamps to the last reachable disk
 * **The FM77AV side is younger than the FM-7 side.** 68 AV titles have been
   swept against a reference emulator — 30 match it and the rest are blank on the
-  reference too — against 395 disks checked on the FM-7 side
+  reference too — against 395 disks checked on the FM-7 side. That sweep samples
+  a few frames per title, so it catches a title that never draws; it does not
+  catch one that plays its intro and then stops. That is how Silpheed's encoder
+  fault (fixed here) went unnoticed for so long — expect more of that shape
+* **Two-disk FM77AV titles need BOTH disks mounted.** Silpheed with only its
+  first disk sits on the GameArts logo forever — that is the game, not the core
+* **Some titles start on the joystick only.** Space Harrier draws `LOADING NOW`
+  for about twenty seconds, then a `START / CONTINUE / JOYSTICK NORMAL` menu
+  that answers a **pad button** — no key on the keyboard starts it. If a title
+  looks stuck on a menu, try the pad before reporting it
 * One tape, **Crash Ball**, reports `Device I/O Error` after finding its header
 * **Xanadu Scenario II disk D** does not load
 * PSG pitch is about **0.4 of a semitone flat**, from an integer clock divider
-* The FM77AV's FM sound clock has not been verified against a reference
+* The FM77AV's FM sound **pitch** has not been verified against a reference.
+  Its **timers** have: a title driving its music off the YM2203 Timer B
+  interrupt ticks at 621 Hz here against 640 Hz on the real chip — the same
+  2.3 % the PSG is flat by, and nothing more
 
 ## Thanks
 

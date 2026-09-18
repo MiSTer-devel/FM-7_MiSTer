@@ -41,6 +41,30 @@ module AVKEYBOARD(
   // readable from an address that is not on the sub bus at all.
   input  [7:0] MMR_ADDR,
   output [7:0] MMR_DOUT,
+  // ...and the WRITE half of that window. Without it the aperture is read-only
+  // and a title that drives the encoder entirely from the main CPU gets its
+  // commands dropped on the floor while the status register keeps answering.
+  //
+  // Silpheed (FM77AV) is that title, and it hangs on exactly this. At its title
+  // screen it maps MMR bank 14 to $1D, enables MMR ($FD93 <- $80) so the sub
+  // I/O page appears at $E400, and then writes three commands to $E431 --
+  // $00/$02 (set coding to scan mode), $04/$01, and $80/$00 (read the clock) --
+  // before waiting at $6106 for the seven-byte reply:
+  //
+  //     $6106  LDB $e432
+  //     $6109  BMI $6106        ; spin while b7 (~data_ready) is set
+  //
+  // The ACK polls inside its write helper pass whatever happens, because b0 is
+  // `acknowledge_timer == 0`, which reads 1 when idle -- the same reason Woody
+  // Poco appeared to work through a read-only aperture. b7 is the bit that
+  // tells the truth, and with no command processed it never clears: measured
+  // 1,386,866 reads of $E432 in one run, every one $FF.
+  input        MMR_WR,   // main-CPU write through the aperture, active high
+  input  [7:0] MMR_DIN,
+  // A main-side read of $D431 has to POP the reply queue, not just peek at it.
+  // The comment on MMR_DOUT below used to say "wire a second pop here if a
+  // title that reads one turns up"; Silpheed reads seven.
+  input        MMR_RD,
   // $04 and $05 act on the key repeat, which is KEYBOARD.v's job.
   output reg       RPT_MODE_STB,
   output reg       RPT_MODE_ON,
@@ -61,7 +85,15 @@ wire stat_sel  = io_window && (SADDRBUS[5:0] == 6'h32);
 // FIFO (`keyboard.cpp:1143-1160`). This used to accept either address, which
 // was invisible while every command was stateless; with a parameter counter a
 // stray $D432 write would slip the whole command stream.
-wire write     = data_sel && ~SWTQEn;
+wire sub_write = data_sel && ~SWTQEn;
+wire mmr_sel   = machine_av && (MMR_ADDR[5:0] == 6'h31);
+wire mmr_write = mmr_sel && MMR_WR;
+wire write     = sub_write || mmr_write;
+// The byte being written comes from whichever bus carried the access. Every
+// use of the old `SDATA_in` in the command handler below reads this instead --
+// a main-side command would otherwise latch whatever the halted sub CPU left
+// on its data bus.
+wire [7:0] wr_data = mmr_write ? MMR_DIN : SDATA_in;
 
 // SWTQEn is a decode window, not a clock: it is low for the whole of the ~2 MHz
 // Q&E write phase, which is dozens of 48 MHz CLKSYS cycles. Every earlier user
@@ -114,7 +146,7 @@ assign MMR_DOUT = (MMR_ADDR[5:0] == 6'h31) ? out_shift[55:48] : status;
 // a single read without this edge. The address does change between accesses --
 // the sub polls $D432 between every $D431 read -- so the edge is real.
 reg d431_rd_d;
-wire d431_rd = data_sel && SRWB;
+wire d431_rd = (data_sel && SRWB) || (mmr_sel && MMR_RD);
 
 // The real-time clock, as the encoder reports it. Seven bytes, packed BCD:
 //
@@ -166,7 +198,7 @@ reg [3:0] param_need_eff;
 always @* begin
   param_need_eff = param_need;
   if (write_stb && command_pending && (command == 8'h80) &&
-      (param_n == 4'd0) && (SDATA_in == 8'h01))
+      (param_n == 4'd0) && (wr_data == 8'h01))
     param_need_eff = 4'd8;
 end
 
@@ -226,9 +258,9 @@ always @(posedge CLKSYS) begin
     if (write_stb) begin
       acknowledge_timer <= 13'd4800; // approximately 100 us at 48 MHz
       if (!command_pending) begin
-        command <= SDATA_in;
+        command <= wr_data;
         param_n <= 4'd0;
-        case (SDATA_in)
+        case (wr_data)
           8'h01: begin out_shift <= {mode,        48'd0}; out_count <= 3'd1;
                        command <= 8'd0; param_need <= 4'd0; end
           8'h03: begin out_shift <= {leds,        48'd0}; out_count <= 3'd1;
@@ -246,19 +278,19 @@ always @(posedge CLKSYS) begin
         param_n    <= param_n + 4'd1;
         param_need <= param_need_eff;
         case (command)
-          8'h00: if (SDATA_in <= 8'd2) mode <= SDATA_in;
-          8'h02: if (SDATA_in <= 8'd3) leds <= SDATA_in;
+          8'h00: if (wr_data <= 8'd2) mode <= wr_data;
+          8'h02: if (wr_data <= 8'd3) leds <= wr_data;
           // $04: 00 repeat on, 01 off, anything else ignored (XM7
           // key_set_repeat, VM_keyboard.c.txt:1602-1615; CSP keyboard.cpp:777-798).
-          8'h04: if (SDATA_in < 8'd2) begin
-                   RPT_MODE_ON  <= (SDATA_in == 8'd0);
+          8'h04: if (wr_data < 8'd2) begin
+                   RPT_MODE_ON  <= (wr_data == 8'd0);
                    RPT_MODE_STB <= 1'b1;
                  end
           // $05: delay, then interval, each in 10 ms. KEYBOARD.v restores
           // 700/70 when either is zero (XM7 key_set_time, :1627-1640; CSP :800-822).
-          8'h05: if (param_n == 4'd0) RPT_DELAY <= SDATA_in;
+          8'h05: if (param_n == 4'd0) RPT_DELAY <= wr_data;
                  else begin
-                   RPT_INTERVAL <= SDATA_in;
+                   RPT_INTERVAL <= wr_data;
                    RPT_TIME_STB <= 1'b1;
                  end
           8'h80:
@@ -267,13 +299,13 @@ always @(posedge CLKSYS) begin
             // (CSP `keyboard.cpp:1052-1070`). The set payload is swallowed:
             // 77AVEMU takes the same position -- "Supposed to set RTC, but
             // I'll take it from host clock" (`fm77avkeyboard.cpp:676`).
-            if ((param_n == 4'd0) && (SDATA_in == 8'h00)) begin
+            if ((param_n == 4'd0) && (wr_data == 8'h00)) begin
               out_shift <= rtc_reply;
               out_count <= 3'd7;
             end
           8'h81: ; // digitize mode, no video capture in this core
-          8'h82: screen_mode <= SDATA_in;
-          8'h84: brightness  <= SDATA_in;
+          8'h82: screen_mode <= wr_data;
+          8'h84: brightness  <= wr_data;
           default: ;
         endcase
         if (param_n + 4'd1 >= param_need_eff) begin
