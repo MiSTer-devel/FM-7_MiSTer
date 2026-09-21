@@ -25,8 +25,8 @@ module sound_tb;
   reg        wfd16n = 1'b1;
   reg        rfd16n = 1'b1;
   wire [7:0] dout;
-  wire [13:0] mix;
-  wire [11:0] fm;
+  wire  [9:0] psg;                 // SSG mix, 0..765
+  wire signed [15:0] fm;           // FM mix, signed
 
   SOUND dut(
     .CLKSYS(clk), .CLK1_2(1'b0), .RESETBn(resetn), .machine_av(1'b0),
@@ -34,7 +34,7 @@ module sound_tb;
     .RFD0En(1'b1), .WFD0En(wfd0en), .WFD0Dn(wfd0dn),
     .RFD16n(rfd16n), .WFD16n(wfd16n), .WFD15n(wfd15n),
     .joystick_0(joy0), .joystick_1(joy1),
-    .mix_audio_o(mix), .fm_audio_o(fm), .FMIRQn()
+    .psg_snd_o(psg), .fm_snd_o(fm), .FMIRQn()
   );
 
   integer fails = 0;
@@ -89,7 +89,7 @@ module sound_tb;
   // MiSTer bit order: [0]=right [1]=left [2]=down [3]=up [4]=A [5]=B, active high.
   reg  [5:0] joy0 = 6'd0, joy1 = 6'd0;
 
-  reg [13:0] mix_max;
+  reg [9:0] psg_max;
   integer i;
 
   initial begin
@@ -109,34 +109,34 @@ module sound_tb;
     // and the old 200,000-clock window was inside the FIRST HALF of it -- with
     // jt49's output sitting at a true zero while the square is low, that reads
     // as "the chip is silent" rather than as "the bench looked too early".
-    mix_max = 14'd0;
+    psg_max = 10'd0;
     for (i = 0; i < 1000000; i = i + 1) begin
       @(posedge clk);
-      if (mix > mix_max) mix_max = mix;
+      if (psg > psg_max) psg_max = psg;
     end
 
-    if (mix_max == 14'd0) begin
+    if (psg_max == 10'd0) begin
       $display("FAIL PSG mix stayed at zero after programming tone A");
       fails = fails + 1;
     end
-    else $display("PASS PSG mix reached %0d", mix_max);
+    else $display("PASS PSG mix reached %0d of 765", psg_max);
 
     // Silence the channel again; the mix must fall back to zero.
     psg_write(4'd8, 8'h00);
     repeat (2000) @(posedge clk);
-    mix_max = 14'd0;
+    psg_max = 10'd0;
     for (i = 0; i < 20000; i = i + 1) begin
       @(posedge clk);
-      if (mix > mix_max) mix_max = mix;
+      if (psg > psg_max) psg_max = psg;
     end
     // Amplitude 0 must at least collapse the swing; the mix floor itself is
     // the chip's own DC level, not something this bench should assert a value
     // for without a reference.
-    if (mix_max >= 8191) begin
-      $display("FAIL amplitude 0 left the mix at %0d", mix_max);
+    if (psg_max >= 10'd511) begin
+      $display("FAIL amplitude 0 left the mix at %0d", psg_max);
       fails = fails + 1;
     end
-    else $display("PASS amplitude 0 drops the mix to %0d", mix_max);
+    else $display("PASS amplitude 0 drops the mix to %0d", psg_max);
 
     // ---- pitch -------------------------------------------------------------
     // Measure the divider the tone counter actually uses, independent of any
@@ -158,8 +158,8 @@ module sound_tb;
       t0 = 0; t1 = 0; edges = 0; prev_hi = 1'b0;
       for (i = 0; i < 4000000; i = i + 1) begin
         @(posedge clk);
-        if ((mix > 14'd1000) != prev_hi) begin
-          prev_hi = (mix > 14'd1000);
+        if ((psg > 10'd62) != prev_hi) begin   // was mix > 1000 on psg_snd<<4
+          prev_hi = (psg > 10'd62);
           if (prev_hi) begin
             edges = edges + 1;
             if (edges == 2) t0 = i;

@@ -41,8 +41,13 @@ module SOUND(
   input [5:0] joystick_0,
   input [5:0] joystick_1,
 
-  output [13:0] mix_audio_o,   // SSG mix, unsigned, 0 = silence
-  output [11:0] fm_audio_o,    // FM mix, unsigned, 2048 = silence
+  // jt03's two halves, at the chip's own scale. Scaling and balance are
+  // rtl/AUDIOMIX.v's job, which is where the ratio between them is argued;
+  // this module used to pre-scale both and so quietly owned half of that
+  // decision -- including squeezing the FM into 12 bits, which threw away
+  // the bottom four bits of every FM sample before anything could use them.
+  output [ 9:0] psg_snd_o,     // SSG mix, 0..765 (3 x 255), 0 = silence
+  output signed [15:0] fm_snd_o, // FM mix, signed, 0 = silence
   output        FMIRQn
 );
 
@@ -319,15 +324,11 @@ jt03 u_jt03(
   .debug_view (            )
 );
 
-// The retired ym2149_audio mix was three 12-bit DACs summed, peaking at 12288
-// on a 14-bit bus. jt49 accumulates three linearised 8-bit channels into 10
-// bits, so full scale is 3 x 255 = 765 and x16 puts it back at 12240 -- the
-// same level, so the top-level headroom sum in FM-7_MiSTer.sv is unchanged.
-assign mix_audio_o = { psg_snd, 4'b0000 };
-
-// The FM half is signed; the core's audio bus is unsigned with AUDIO_S = 0, so
-// it leaves here as 12 bits around a 2048 midpoint. That is the largest slice
-// the top-level sum has room for without overflowing 16 bits.
-assign fm_audio_o = fm_snd[15:4] + 12'd2048;
+// jt49 accumulates three linearised 8-bit channels into 10 bits, so full
+// scale is 3 x 255 = 765. jt03_acc sums three FM channels of 14-bit operator
+// results into a signed 16 and clamps there (jt03_acc.v:59-64). Both go out
+// as they are.
+assign psg_snd_o = psg_snd;
+assign fm_snd_o  = fm_snd;
 
 endmodule

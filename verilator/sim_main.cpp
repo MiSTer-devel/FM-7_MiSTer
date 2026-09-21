@@ -40,6 +40,7 @@
 #include <map>
 #include <set>
 #include <algorithm>
+#include <cmath>
 
 #include "sim_console.h"
 #include "sim_bus.h"
@@ -130,9 +131,18 @@ static bool last_subio_write = false;
 static bool last_subio_read  = false;
 static int  av_dump_frame = 870;
 static bool trace_av_video = false;
-static unsigned au_out_max = 0, au_core_max = 0, au_l_max = 0;
+static unsigned au_out_max = 0, au_core_max = 0;
 static long au_out_nz = 0, au_core_nz = 0;
 static unsigned au_out_seen = 0;
+// FM/SSG balance census. A peak says nothing about loudness -- a single
+// transient sets it -- so what is accumulated here is each source's AC RMS
+// (the standard deviation about its own mean), which is the quantity the ear
+// judges. Both are the value that source CONTRIBUTES to AUDIO_L, so their
+// ratio in dB is the mix balance itself, not a proxy for it.
+static double au_fm_sum = 0.0, au_fm_sq = 0.0;
+static double au_ps_sum = 0.0, au_ps_sq = 0.0;
+static long   au_bal_n  = 0;
+static int    au_fm_raw_min = 0, au_fm_raw_max = 0;
 static long psg_d_strobes = 0, psg_e_strobes = 0, psg_cen_ticks = 0;
 static unsigned psg_bc_seen = 0;
 static unsigned dac_a_max=0, dac_b_max=0, dac_c_max=0;
@@ -168,11 +178,12 @@ static void wav_sample(unsigned l, unsigned r) {
 	wav_acc += WAV_RATE;
 	if (wav_acc < CLK_SYS_HZ) return;
 	wav_acc -= CLK_SYS_HZ;
-	// The core's audio is unsigned over the 14-bit range with silence at 0, so
-	// centre on half of that -- subtracting 32768/2 would leave the whole file
-	// below zero, which is a DC step rather than a centred waveform.
-	const short sl = (short)((int)l - 8192);
-	const short sr = (short)((int)r - 8192);
+	// AUDIO_L/R are signed now (AUDIO_S = 1, rtl/AUDIOMIX.v), silence at 0,
+	// which is what a 16-bit WAV frame already is -- so this is a cast and not
+	// a conversion. It used to subtract 8192 to centre an unsigned mix whose
+	// silence was 0; doing that to a signed sample would push the whole file
+	// off centre by a quarter of full scale.
+	const short sl = (short)l, sr = (short)r;
 	fwrite(&sl, 2, 1, wav_file); fwrite(&sr, 2, 1, wav_file);
 	wav_frames++;
 }
@@ -1138,8 +1149,22 @@ static void print_run_stats() {
 	       (stat_d40a_rd == 0 && stat_d40a_wr == 0)
 	           ? "   <- sub never touched the BUSY flag" : "");
 	printf("I/O cycles ($fdxx): %ld\n", stat_io_cycles);
-	printf("audio             : PSG max %u (nonzero %ld)  core_audio max %u (nonzero %ld)  AUDIO_L max %u\n",
-	       au_out_max, au_out_nz, au_core_max, au_core_nz, au_l_max);
+	printf("audio             : SSG term max %u (nonzero %ld)  |mix| max %u (nonzero %ld)\n",
+	       au_out_max, au_out_nz, au_core_max, au_core_nz);
+	if (au_bal_n) {
+		const double n  = (double)au_bal_n;
+		const double fv = au_fm_sq / n - (au_fm_sum / n) * (au_fm_sum / n);
+		const double pv = au_ps_sq / n - (au_ps_sum / n) * (au_ps_sum / n);
+		const double fr = fv > 0 ? sqrt(fv) : 0.0;
+		const double pr = pv > 0 ? sqrt(pv) : 0.0;
+		printf("audio balance     : FM rms %.1f  SSG rms %.1f  (of +-32767)   raw fm_snd %d .. %d\n",
+		       fr, pr, au_fm_raw_min, au_fm_raw_max);
+		if (fr > 0 && pr > 0)
+			printf("                    FM is %+.1f dB against the SSG in the mix\n",
+			       20.0 * log10(fr / pr));
+		else
+			printf("                    one half stayed silent, so there is no ratio to report\n");
+	}
 	// The command register replaced the {bdir,bc1} pair when the PSG became a
 	// jt03: the FM-7 writes 0-3 here, the FM77AV also uses 4 (status) and 9
 	// (joystick) through $fd15. A run with $fd0e writes but no command 2 is
@@ -1565,17 +1590,32 @@ static void sim_cycle() {
 		if ((unsigned)top->dbg_dac_b > dac_b_max) dac_b_max = top->dbg_dac_b;
 		if ((unsigned)top->dbg_dac_c > dac_c_max) dac_c_max = top->dbg_dac_c;
 	}
-	{   // audio-path census: is the PSG producing signal, and does it survive?
-		const unsigned ao = top->dbg_audio_out, ca = top->dbg_core_audio;
+	{   // audio-path census: is each chip half producing signal, and at what
+		// level relative to the other? Both terms below are exactly what
+		// rtl/AUDIOMIX.v adds into the sum, so their ratio IS the mix balance.
+		const int raw = (int)(short)top->dbg_fm_snd;
+		const unsigned ao = (unsigned)top->dbg_psg_snd << 4;   // AUDIOMIX SSG term
+		const int      fc = raw >> 1;                          // AUDIOMIX FM term
+		const int      ca = (int)(short)top->dbg_core_audio;
+		const unsigned cm = (unsigned)(ca < 0 ? -ca : ca);
 		if (ao > au_out_max)  au_out_max  = ao;
-		if (ca > au_core_max) au_core_max = ca;
-		if ((unsigned)top->AUDIO_L > au_l_max) au_l_max = top->AUDIO_L;
+		if (cm > au_core_max) au_core_max = cm;
 		if (ao) au_out_nz++;
 		if (ca) au_core_nz++;
 		au_out_seen |= ao;
+
+		const double fm = (double)fc, ps = (double)ao;
+		au_fm_sum += fm; au_fm_sq += fm * fm;
+		au_ps_sum += ps; au_ps_sq += ps * ps;
+		au_bal_n++;
+		if (raw < au_fm_raw_min) au_fm_raw_min = raw;
+		if (raw > au_fm_raw_max) au_fm_raw_max = raw;
 	}
 	wav_sample(top->AUDIO_L, top->AUDIO_R);
-	if (!headless) audio.Clock(top->AUDIO_L, top->AUDIO_R);
+	// SimAudio::Clock takes signed shorts. It was being handed the old
+	// unsigned mix, so everything above 32767 wrapped to full negative and the
+	// windowed sim's own playback was not the core's audio.
+	if (!headless) audio.Clock((signed short)top->AUDIO_L, (signed short)top->AUDIO_R);
 
 	// --- falling edge ------------------------------------------------
 	top->clk_sys = 0;

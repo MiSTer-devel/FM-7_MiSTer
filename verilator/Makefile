@@ -342,6 +342,7 @@ V_SRC = \
 	$(RTL)/SDECODE.v \
 	$(RTL)/SMEM.v \
 	$(RTL)/SOUND.v \
+	$(RTL)/AUDIOMIX.v \
 	$(RTL)/SRAM.v \
 	$(RTL)/SUBCRTADDR.v \
 	$(RTL)/t77_decode.v \

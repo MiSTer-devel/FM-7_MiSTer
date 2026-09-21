@@ -38,7 +38,11 @@ assign HDMI_BLACKOUT  = 0;
 assign HDMI_BOB_DEINT = 0;
 assign HDMI_FREEZE = 0;
 
-assign AUDIO_S = 0;
+// Signed, with silence at a true zero. sys/audio_out.sv:217 hands the DAC
+// `{~is_signed ^ cl[15], cl[14:0]}`, so an UNSIGNED core has its top bit
+// flipped on the way out: this core's silence, 0, was arriving as -32768 and
+// every sample it emitted carried a half-scale DC offset.
+assign AUDIO_S = 1;
 // assign AUDIO_L = 0;
 // assign AUDIO_R = 0;
 assign AUDIO_MIX = 0;
@@ -134,11 +138,17 @@ wire [63:0] img_size;
 // Which sub-disk of a multi-disk .d77/.d88 container each drive presents.
 //
 // A DECLARED ARRAY, not an inline `'{...}` assignment pattern in the port map.
-// Verilator accepts the pattern; Quartus 17.0.2 Lite is the build that has to
-// synthesize this, assignment patterns in a port connection are exactly the
-// kind of SystemVerilog it is shaky on, and a simulator will never report the
-// difference. Every other array port here (sd_lba, sd_buff_din) is wired the
-// same way, so this also matches the file's own convention.
+// The simulator accepts that pattern; Quartus 17.0.2 Lite is the build that
+// has to synthesize this, assignment patterns in a port connection are exactly
+// the kind of SystemVerilog it is shaky on, and a simulator will never report
+// the difference. Every other array port here (sd_lba, sd_buff_din) is wired
+// the same way, so this also matches the file's own convention.
+//
+// (The first word of this paragraph used to be the simulator's own name, which
+// it reads as a lint pragma -- `// verilator <word>` is one -- and refuses to
+// parse. That made the top level the one file `--lint-only` could not check,
+// and the Verilator harness compiles verilator/sim.v instead of this file, so
+// nothing checked it but Quartus. See DEVELOPING.md for the lint recipe.)
 wire  [2:0] disk_index [2];
 assign disk_index[0] = status[15:13];
 assign disk_index[1] = status[18:16];
@@ -345,33 +355,27 @@ always @(posedge clk_sys) begin
   end
 end
 wire SVIDEOCLK;
-wire [13:0] audio_out;
-wire [11:0] fm_audio_out;
+wire [ 9:0] psg_snd;
+wire signed [15:0] fm_snd;
 wire buzzer;
-wire [7:0] relay_snd;
+wire signed [8:0] relay_snd;
 
-wire [15:0] cin_audio = { 1'b0, cin & motor & status[9], 13'b0 };
-// audio_out is 14 bits, so `{ 1'b0, audio_out, 13'b0 }` is a 28-bit expression
-// assigned to a 16-bit wire: Verilog keeps the LOW 16, which is audio_out[2:0]
-// shifted up to bits 15:13. Only the bottom three bits of the PSG mix reached
-// the DAC, at full scale -- the fastest-changing bits amplified to maximum,
-// i.e. noise rather than the tune, swamping the buzzer and tape audio that sit
-// at bit 13. Measured on Thexder: PSG mix peaked at 10238 and core_audio came
-// out as a constant-amplitude 57344 = 7 << 13.
-//
-// {2'b00, audio_out} keeps all 14 bits. The four sources still cannot overflow:
-// 8192 + 16383 + 8192 + 32640 = 65407.
-wire [15:0] core_audio =  { 2'b00, audio_out };
-wire [15:0] buz_audio = { 1'b0, buzzer, 13'b0 };
-wire [15:0] relay_audio = { 1'b0, (status[9] ? relay_snd : 8'd0), 7'b0 };
-
-// The YM2203's FM half. It arrives unsigned around a 2048 midpoint, so it
-// costs a small DC offset and at most 4095 of swing -- the largest slice
-// left before this sum overflows 16 bits:
-// 8192 + 12240 + 8192 + 32640 + 4095 = 65359.
-wire [15:0] fm_audio = { 4'b0000, fm_audio_out };
-assign AUDIO_L = cin_audio + core_audio + buz_audio + relay_audio + fm_audio;
-assign AUDIO_R = cin_audio + core_audio + buz_audio + relay_audio + fm_audio;
+// The balance between these five, and why each has the gain it has, is all in
+// rtl/AUDIOMIX.v. Keep it there -- this used to be open-coded here AND copied
+// into verilator/sim.v, so the simulator measured a second, drifting copy of
+// the thing it was supposed to be checking.
+wire signed [15:0] core_audio;
+AUDIOMIX u_audiomix(
+  .tape_audio ( status[9]          ),
+  .psg_snd    ( psg_snd            ),
+  .fm_snd     ( fm_snd             ),
+  .buzzer     ( buzzer             ),
+  .cassette   ( cin & motor        ),
+  .relay_snd  ( relay_snd          ),
+  .audio      ( core_audio         )
+);
+assign AUDIO_L = core_audio;
+assign AUDIO_R = core_audio;
 
 core u_core(
   .RESETn      ( RESETn        ),
@@ -387,8 +391,8 @@ core u_core(
   .joystick_1  ( joy2[5:0]     ),
   .SVIDEOCLK   ( SVIDEOCLK     ),
   .ce_pix      ( ce_pix        ),
-  .audio_out   ( audio_out     ),
-  .fm_audio_out( fm_audio_out ),
+  .psg_snd     ( psg_snd       ),
+  .fm_snd      ( fm_snd        ),
   .KANJI_ADDR  ( kanji_addr    ),
   .KANJI_RD    ( kanji_rd      ),
   .KANJI_GNT   ( kanji_gnt     ),
@@ -519,9 +523,9 @@ sdram u_sdram(
 );
 
 pcm pcm(
-  .CLKSYS         ( CLKSYS    ),
-  .motor          ( motor     ),
-  .unsigned_audio ( relay_snd )
+  .CLKSYS      ( CLKSYS    ),
+  .motor       ( motor     ),
+  .relay_audio ( relay_snd )
 );
 
 assign CLK_VIDEO = clk_sys;
