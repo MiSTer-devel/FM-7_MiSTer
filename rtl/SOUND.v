@@ -179,6 +179,26 @@ reg [7:0] ym_data;    // the latched data byte
 reg [3:0] ym_cmd;     // the latched command
 reg [7:0] ym_addr;    // the register address latched by command 3
 
+// On the FM-7 the part is an AY-3-8913, which has SIXTEEN registers and masks
+// the address latch to four bits -- CSP `ch = data & 0x0f`
+// (ay_3_891x.cpp:65) and MAME `m_register_latch = data & 0x0f`
+// (ay8910.cpp:1379) agree. jt12 does not: jt12_mmr.v:299 routes only `8'h0?`
+// to the SSG and hands everything from $10 up to the FM and timer sections.
+// So an FM-7 title that latches, say, $28 would write the YM2203's key-on
+// register on a machine that has no FM chip in it at all.
+//
+// NO TITLE HAS BEEN SEEN DOING IT. Thexder's `raw fm_snd` range is -552..75
+// with the mask and -552..75 without it -- identical, and that -552 is jt03's
+// reset transient, not a title. So this is not a fix for an observed bug; it
+// is a guard that goes in WITH the level change, because the level change is
+// what would make such a write audible, and both references say the part
+// masks. `make sound-test` pins it: the same $fd0d writes into an FM-7
+// instance and an FM77AV instance, and only the AV's FM half may answer.
+//
+// The FM77AV keeps the full eight bits on both windows: it IS a YM2203, and
+// $fd0d/$fd0e reach the same address latch $fd15/$fd16 do.
+wire [7:0] sel_addr = machine_av ? ym_data : { 4'd0, ym_data[3:0] };
+
 always @(posedge CLKSYS) begin
   if (reset)         ym_data <= 8'd0;
   else if (data_stb) ym_data <= MDATABUS_in;
@@ -214,9 +234,9 @@ always @(posedge CLKSYS) begin
       end
       4'd3: begin                                    // latch register address
         jt_wr_addr  <= 1'b0;
-        jt_din      <= ym_data;
+        jt_din      <= sel_addr;
         jt_write    <= 1'b1;
-        ym_addr     <= ym_data;
+        ym_addr     <= sel_addr;
         read_status <= 1'b0;
       end
       4'd4: read_status <= 1'b1;                     // read status

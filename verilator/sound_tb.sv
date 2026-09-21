@@ -407,6 +407,18 @@ module sound_tb;
       $display("BALANCE one FM carrier at TL=0 : mix swings %0d  (raw fm_snd %0d .. %0d)",
                fm_swing, avfm_lo, avfm_hi);
 
+      // An AY-3-8913 has sixteen registers and masks the address latch to four
+      // bits -- CSP ay_3_891x.cpp:65, MAME ay8910.cpp:1379. jt12 routes $10
+      // and up to the FM section (jt12_mmr.v:299), so without the mask in
+      // SOUND.v every write above just played an FM note on a machine that has
+      // no FM chip in it. Same writes, same cycles, two instances.
+      if (fm7_swing != 0) begin
+        $display("FAIL an FM-7 reached its FM half through $fd0d (swing %0d) -- the AY-3-8913 address mask is not holding",
+                 fm7_swing);
+        fails = fails + 1;
+      end
+      else $display("PASS FM-7 FM half stayed silent through the same writes");
+
       if (fm_swing == 0) begin
         $display("FAIL the FM half produced nothing");
         fails = fails + 1;
