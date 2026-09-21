@@ -37,6 +37,57 @@ module sound_tb;
     .psg_snd_o(psg), .fm_snd_o(fm), .FMIRQn()
   );
 
+  // The same stimulus, into a second copy configured as an FM77AV. The
+  // $fd15/$fd16 window only exists on the AV -- core.v:203 gates it on
+  // `machine_av` -- so the AV section below has to ask an AV, and the two
+  // instances side by side are what makes the address-mask check possible:
+  // identical writes, and only one of them is allowed to reach the FM half.
+  wire [7:0]  av_dout;
+  wire [9:0]  av_psg;
+  wire signed [15:0] av_fm;
+  SOUND avdut(
+    .CLKSYS(clk), .CLK1_2(1'b0), .RESETBn(resetn), .machine_av(1'b1),
+    .MDATABUS_in(mdata), .MDATABUS_out(av_dout),
+    .RFD0En(1'b1), .WFD0En(wfd0en), .WFD0Dn(wfd0dn),
+    .RFD16n(rfd16n), .WFD16n(wfd16n), .WFD15n(wfd15n),
+    .joystick_0(joy0), .joystick_1(joy1),
+    .psg_snd_o(av_psg), .fm_snd_o(av_fm), .FMIRQn()
+  );
+
+  // ...and the real mix module on the AV's two halves, so the balance check
+  // below measures what the core actually emits rather than a restatement of
+  // AUDIOMIX's arithmetic inside the bench.
+  wire signed [15:0] av_mix;
+  AUDIOMIX u_mix(
+    .tape_audio(1'b0), .psg_snd(av_psg), .fm_snd(av_fm),
+    .buzzer(1'b0), .cassette(1'b0), .relay_snd(9'sd0), .audio(av_mix)
+  );
+
+  // Peak-to-peak of av_mix over a window, which is the quantity that decides
+  // whether one source drowns the other. `fm7_swing` comes back alongside it:
+  // the FM-7 instance's FM half over the SAME window, which is how the
+  // AY-3-8913 address mask is checked without depending on what jt03 happens
+  // to hold at reset.
+  integer mix_lo, mix_hi, avfm_lo, avfm_hi, fm7_lo, fm7_hi;
+  task measure(input integer clocks, output integer swing, output integer fm7_swing);
+    begin
+      mix_lo  =  32'sh7fffffff; mix_hi  = -32'sh7fffffff;
+      avfm_lo =  32'sh7fffffff; avfm_hi = -32'sh7fffffff;
+      fm7_lo  =  32'sh7fffffff; fm7_hi  = -32'sh7fffffff;
+      for (i = 0; i < clocks; i = i + 1) begin
+        @(posedge clk);
+        if (av_mix < mix_lo)  mix_lo  = av_mix;
+        if (av_mix > mix_hi)  mix_hi  = av_mix;
+        if (av_fm  < avfm_lo) avfm_lo = av_fm;
+        if (av_fm  > avfm_hi) avfm_hi = av_fm;
+        if (fm     < fm7_lo)  fm7_lo  = fm;
+        if (fm     > fm7_hi)  fm7_hi  = fm;
+      end
+      swing     = mix_hi - mix_lo;
+      fm7_swing = fm7_hi - fm7_lo;
+    end
+  endtask
+
   integer fails = 0;
 
   // A CPU write: the decode strobe is low for the bus cycle, which at 1.2288 MHz
@@ -68,7 +119,7 @@ module sound_tb;
     begin
       @(negedge clk); rfd16n = 1'b0;
       repeat (8) @(negedge clk);
-      value = dout;
+      value = av_dout;
       rfd16n = 1'b1;
       repeat (8) @(negedge clk);
     end
@@ -86,6 +137,20 @@ module sound_tb;
     end
   endtask
 
+  // The same $fd0d/$fd0e sequence with the FULL address byte. Real FM-7
+  // software can latch any byte here: the command set is masked to two bits,
+  // the ADDRESS is not.
+  task psg_write8(input [7:0] regno, input [7:0] value);
+    begin
+      cpu_write(1'b0, regno);
+      cpu_write(1'b1, 8'h03);
+      cpu_write(1'b1, 8'h00);
+      cpu_write(1'b0, value);
+      cpu_write(1'b1, 8'h02);
+      cpu_write(1'b1, 8'h00);
+    end
+  endtask
+
   // MiSTer bit order: [0]=right [1]=left [2]=down [3]=up [4]=A [5]=B, active high.
   reg  [5:0] joy0 = 6'd0, joy1 = 6'd0;
 
@@ -93,9 +158,19 @@ module sound_tb;
   integer i;
 
   initial begin
-    repeat (20) @(negedge clk);
+    // HOLD RESET LONG ENOUGH. jt12 keeps its register file in shift registers
+    // and jt12_rst.v is only a two-stage synchroniser, so the clearing comes
+    // from jt12_mmr walking the file -- which needs `cen` ticks, and `cen`
+    // here is one tick per 40 clocks. Measured: at 0-2 ticks of reset jt03's
+    // FM half idles at -24504, three quarters of the way to jt03_acc's
+    // negative rail; at 8 ticks, -16311; from 32 ticks on, a true 0. The real
+    // core holds RESETBn for far longer than that, which is why full-machine
+    // runs show an idle of 0..75 -- but a bench that pulses reset for twenty
+    // clocks measures a chip that never initialised, and every FM level it
+    // then reports is sitting on that pedestal. This cost an hour.
+    repeat (2000) @(negedge clk);
     resetn = 1'b1;
-    repeat (20) @(negedge clk);
+    repeat (2000) @(negedge clk);
 
     // Channel A: a mid tone, mixer with tone A enabled (noise and I/O off),
     // amplitude 15 fixed. Registers per the AY-3-8910 map.
@@ -281,6 +356,70 @@ module sound_tb;
       av_write(1'b1, 8'h04);
       av_read(st);
       $display("INFO $fd16 status after an FM register write = %02x", st);
+    end
+
+    // ---- the FM half against the SSG half, through AUDIOMIX -----------------
+    // Issue #1: "FM sound is present, but it's almost inaudible." A YM2203 has
+    // no rhythm section, so a music driver puts percussion on the SSG's noise
+    // channel and the tune on FM -- which is heard exactly as reported when
+    // the SSG is the louder of the two. jt12 states the ratio it intends in
+    // jt12_top.v:482 (FM at unity against psg_snd << 5); this core was mixing
+    // fm_snd >>> 4 against psg_snd << 4, eight times too quiet.
+    //
+    // The two measurements below are one carrier at TL=0 against one SSG
+    // channel at amplitude 15 -- the loudest each half can be per voice.
+    // Everything is written through $fd0d/$fd0e, the window a real FM-7 has,
+    // so the FM-7 instance sees the identical stimulus.
+    begin : balance
+      integer fm_swing, ssg_swing, fm7_swing;
+
+      // The SSG first, while nothing has keyed an FM note: the pitch section
+      // above left channel A programmed and at amplitude 15, and it reaches
+      // BOTH instances. Measuring it before any FM exists is what avoids
+      // having to wait out an FM release later -- at the AV's FM sample rate
+      // (cen/6/24) a release is tens of thousands of bench clocks, and an
+      // earlier version of this check measured the SSG through a still-ringing
+      // note and reported the sum of the two.
+      psg_write(4'd7, 8'h3e);
+      psg_write(4'd8, 8'h0f);
+      psg_write(4'd9, 8'h00); psg_write(4'd10, 8'h00);
+      measure(2000000, ssg_swing, fm7_swing);
+      $display("BALANCE one SSG channel at 15  : mix swings %0d", ssg_swing);
+
+      // Now silence the SSG and key one FM carrier at TL=0. Channel 1,
+      // algorithm 7 (all four operators are carriers), AR=31 so it is at full
+      // amplitude immediately. Everything goes through $fd0d/$fd0e, the window
+      // a real FM-7 has, so the FM-7 instance sees the identical stimulus.
+      psg_write(4'd8, 8'h00);
+      psg_write8(8'h30, 8'h01); psg_write8(8'h34, 8'h01);
+      psg_write8(8'h38, 8'h01); psg_write8(8'h3c, 8'h01);
+      psg_write8(8'h40, 8'h00); psg_write8(8'h44, 8'h7f);
+      psg_write8(8'h48, 8'h7f); psg_write8(8'h4c, 8'h7f);
+      psg_write8(8'h50, 8'h1f); psg_write8(8'h54, 8'h1f);
+      psg_write8(8'h58, 8'h1f); psg_write8(8'h5c, 8'h1f);
+      psg_write8(8'h80, 8'h0f); psg_write8(8'h84, 8'h0f);
+      psg_write8(8'h88, 8'h0f); psg_write8(8'h8c, 8'h0f);
+      psg_write8(8'hb0, 8'h07);
+      psg_write8(8'ha4, 8'h22); psg_write8(8'ha0, 8'h00);
+      psg_write8(8'h28, 8'hf0);          // key on channel 1
+
+      measure(2000000, fm_swing, fm7_swing);
+      $display("BALANCE one FM carrier at TL=0 : mix swings %0d  (raw fm_snd %0d .. %0d)",
+               fm_swing, avfm_lo, avfm_hi);
+
+      if (fm_swing == 0) begin
+        $display("FAIL the FM half produced nothing");
+        fails = fails + 1;
+      end
+      else if (fm_swing < ssg_swing) begin
+        $display("FAIL FM %0d is quieter than SSG %0d -- every reference puts FM at or above the SSG (jt12_top.v:482, fmgen opna.cpp:165/387, 77AVEMU ym2612.h:96)",
+                 fm_swing, ssg_swing);
+        fails = fails + 1;
+      end
+      else $display("PASS FM %0d against SSG %0d, ratio %0d.%02d : 1",
+                    fm_swing, ssg_swing,
+                    fm_swing / ssg_swing,
+                    (fm_swing * 100 / ssg_swing) % 100);
     end
 
     if (fails == 0) $display("SOUND TEST PASS");

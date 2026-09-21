@@ -456,10 +456,10 @@ kanji-test: all
 # Directed check that a PSG register write reaches the chip and makes sound.
 # A full-machine run is a ten-minute experiment; this is seconds, which is the
 # only way to iterate the $fd0d/$fd0e bus handshake.
-sound-test: sound_tb.sv ../rtl/SOUND.v ../rtl/clk_en.v ../rtl/clocks.svh $(JT12_SRC)
+sound-test: sound_tb.sv ../rtl/SOUND.v ../rtl/AUDIOMIX.v ../rtl/clk_en.v ../rtl/clocks.svh $(JT12_SRC)
 	verilator --binary --timing -Wno-fatal --Mdir /tmp/fm7-sound-obj -I../rtl \
 		--top-module sound_tb sound_tb.sv ../rtl/clocks.svh ../rtl/SOUND.v \
-		../rtl/clk_en.v $(JT12_SRC)
+		../rtl/AUDIOMIX.v ../rtl/clk_en.v $(JT12_SRC)
 	/tmp/fm7-sound-obj/Vsound_tb
 
 # Directed check for the FM77AV MB61VH010 drawing ALU.  The byte
