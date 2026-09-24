@@ -214,12 +214,12 @@ You can build your own ROM sets for other variants; the file format is in
 * One tape, **Crash Ball**, reports `Device I/O Error` after finding its header
 * **Xanadu Scenario II disk D** does not load
 * PSG pitch is about **0.4 of a semitone flat**, from an integer clock divider
-* **FM and PSG levels were rebalanced and have not had a listening test.** The
-  FM77AV's FM half used to sit about 18 dB under the PSG, so a tune came out as
-  drums over a barely audible melody. It now follows the balance jt12 itself
-  intends. Nobody has measured a real FM77AV's board, and the emulators that
-  model it disagree by a factor of four, so if the mix sounds wrong to you that
-  is worth reporting
+* **The FM/PSG balance has been listened to, not measured.** The FM77AV's FM
+  half used to sit about 18 dB under the PSG, so a tune came out as drums over
+  a barely audible melody. It now follows the balance jt12 itself intends, and
+  sounds right on a DE10-Nano. Nobody has measured a real FM77AV's board, and
+  the emulators that model it disagree by a factor of four, so if the mix
+  sounds wrong to you that is worth reporting
 * The FM77AV's FM sound **pitch** has not been verified against a reference.
   Its **timers** have: a title driving its music off the YM2203 Timer B
   interrupt ticks at 621 Hz here against 640 Hz on the real chip — the same
