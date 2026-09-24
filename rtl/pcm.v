@@ -4,7 +4,7 @@
 module pcm(
   input CLKSYS,
   input motor,
-  output [7:0] unsigned_audio
+  output signed [8:0] relay_audio
 );
 
 reg [1:0] state; // 0 = off, 1 = relay on, 2 = relay off
@@ -21,7 +21,15 @@ always @(posedge CLKSYS)
 wire _8000Hz;
 clk_en #(PCM_CLK) u_ck_en(.ref_clk(CLKSYS), .cen(_8000Hz));
 
-assign unsigned_audio = state == 2'd1 ? on_sound : state == 2'd2 ? off_sound : 8'd0;
+// Both recordings sit on a 128 midpoint, not on zero: RELAY_ON.mem runs
+// 119..134 and RELAY_OFF.mem 118..137, each about a mean of 127. Handing the
+// raw byte to the audio sum as if 0 were its silence made every relay event a
+// DC STEP of 128 -- which the old `relay_snd << 7` turned into 16384, thirteen
+// times the amplitude of the +-10 rattle actually recorded, and half the sum's
+// whole budget. Subtracting the midpoint leaves the recording and nothing
+// else, and a true zero while no sample is playing.
+wire [7:0] sample = state == 2'd1 ? on_sound : state == 2'd2 ? off_sound : 8'd128;
+assign relay_audio = $signed({1'b0, sample}) - 9'sd128;
 
 always @(posedge CLKSYS) begin
   if (motor == 0 && old_motor_state == 0) begin

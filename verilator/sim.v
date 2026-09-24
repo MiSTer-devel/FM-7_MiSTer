@@ -198,9 +198,12 @@ module emu
 	output        dbg_av_read,
 	output        dbg_sub_halt,
 
-	// Temporary audio-path tap.
-	output [13:0] dbg_audio_out,
-	output [15:0] dbg_core_audio,
+	// Audio-path tap: the two chip halves as AUDIOMIX receives them, and the
+	// mixed result. The census in sim_main.cpp turns the first two into an
+	// FM-against-SSG balance figure.
+	output  [9:0] dbg_psg_snd,
+	output signed [15:0] dbg_fm_snd,
+	output signed [15:0] dbg_core_audio,
 	output        dbg_wfd0dn,
 	output        dbg_wfd0en,
 	output  [1:0] dbg_psg_bc,
@@ -244,10 +247,10 @@ wire  [2:0] grb;
 wire [23:0] rgb;
 wire        HBlank, VBlank, HSync, VSync, ce_pix;
 wire        SVIDEOCLK;
-wire [13:0] audio_out;
-wire [11:0] fm_audio_out;
+wire  [9:0] psg_snd;
+wire signed [15:0] fm_snd;
 wire        buzzer;
-wire  [7:0] relay_snd;
+wire signed [8:0] relay_snd;
 
 wire        cin;
 wire        motor;
@@ -266,8 +269,8 @@ core u_core(
   .joystick_1  ( joystick_1  ),
   .SVIDEOCLK   ( SVIDEOCLK   ),
   .ce_pix      ( ce_pix      ),
-  .audio_out   ( audio_out   ),
-  .fm_audio_out( fm_audio_out),
+  .psg_snd     ( psg_snd     ),
+  .fm_snd      ( fm_snd      ),
   .buzzer      ( buzzer      ),
   // tape
   .cin         ( cin         ),
@@ -310,9 +313,9 @@ assign sd_rd = { 14'd0, sd_rd_0 };
 assign sd_wr = { 14'd0, sd_wr_0 };
 
 pcm pcm(
-  .CLKSYS         ( CLKSYS    ),
-  .motor          ( motor     ),
-  .unsigned_audio ( relay_snd )
+  .CLKSYS      ( CLKSYS    ),
+  .motor       ( motor     ),
+  .relay_audio ( relay_snd )
 );
 
 //////////////////////////////////////////////////////////////////
@@ -356,28 +359,29 @@ assign VGA_VB = VBlank & ~((v_count == 9'd261) && (h_count >= 10'd640));
 //////////////////////////////////////////////////////////////////
 // Audio
 //
-// FM-7_MiSTer.sv: cassette bit, core PSG, buzzer and relay click, summed.
+// The SAME module FM-7_MiSTer.sv instantiates, not a copy of its arithmetic.
+// The two used to carry hand-duplicated mixes, which meant the simulator's
+// audio census was measuring a second implementation of the thing under test.
 // status[9] ("Tape Audio") gates the cassette and relay.
+//
+// This harness has no AUDIO_S port, so it cannot read the top level's choice.
+// sim_main.cpp casts AUDIO_L/R to signed to match `assign AUDIO_S = 1` in
+// FM-7_MiSTer.sv -- the WAV writer, the census and SimAudio all depend on
+// that, so if AUDIO_S ever moves, move them with it.
 //////////////////////////////////////////////////////////////////
 
-wire [15:0] cin_audio   = { 1'b0, cin & motor & tape_audio, 13'b0 };
-// audio_out is 14 bits, so `{ 1'b0, audio_out, 13'b0 }` is a 28-bit expression
-// assigned to a 16-bit wire: Verilog keeps the LOW 16, which is audio_out[2:0]
-// shifted up to bits 15:13. Only the bottom three bits of the PSG mix reached
-// the DAC, at full scale -- the fastest-changing bits amplified to maximum,
-// i.e. noise rather than the tune, swamping the buzzer and tape audio that sit
-// at bit 13. Measured on Thexder: PSG mix peaked at 10238 and core_audio came
-// out as a constant-amplitude 57344 = 7 << 13.
-//
-// {2'b00, audio_out} keeps all 14 bits. The four sources still cannot overflow:
-// 8192 + 16383 + 8192 + 32640 = 65407.
-wire [15:0] core_audio  = { 2'b00, audio_out };
-wire [15:0] buz_audio   = { 1'b0, buzzer, 13'b0 };
-wire [15:0] relay_audio = { 1'b0, (tape_audio ? relay_snd : 8'd0), 7'b0 };
-
-wire [15:0] fm_audio = { 4'b0000, fm_audio_out };
-assign AUDIO_L = cin_audio + core_audio + buz_audio + relay_audio + fm_audio;
-assign AUDIO_R = AUDIO_L;
+wire signed [15:0] core_audio;
+AUDIOMIX u_audiomix(
+  .tape_audio ( tape_audio ),
+  .psg_snd    ( psg_snd    ),
+  .fm_snd     ( fm_snd     ),
+  .buzzer     ( buzzer     ),
+  .cassette   ( cin & motor),
+  .relay_snd  ( relay_snd  ),
+  .audio      ( core_audio )
+);
+assign AUDIO_L = core_audio;
+assign AUDIO_R = core_audio;
 
 //////////////////////////////////////////////////////////////////
 // Cassette: ioctl -> SDRAM -> t77_decode
@@ -637,7 +641,8 @@ assign dbg_av_phys   = u_core.u_AVMEM.physical_address;
 assign dbg_av_write  = u_core.u_AVMEM.av_write;
 assign dbg_av_read   = ~u_core.u_AVMEM.RDQEn;
 assign dbg_sub_halt  = ~u_core.SHALTn;
-assign dbg_audio_out  = audio_out;
+assign dbg_psg_snd    = psg_snd;
+assign dbg_fm_snd     = fm_snd;
 assign dbg_core_audio = core_audio;
 assign dbg_wfd0dn = u_core.WFD0Dn;
 assign dbg_wfd0en = u_core.WFD0En;

@@ -17,8 +17,8 @@ module core(
   input cin,
   output motor,
   output SVIDEOCLK,
-  output [13:0] audio_out,
-  output [11:0] fm_audio_out,
+  output [ 9:0] psg_snd,        // jt03 SSG mix, 0..765, 0 = silence
+  output signed [15:0] fm_snd,  // jt03 FM mix, signed, 0 = silence
   // Kanji ROM SDRAM channel -- the image is too big for block RAM.
   output [16:0] KANJI_ADDR,
   output        KANJI_RD,
@@ -1419,8 +1419,8 @@ SOUND u_SOUND(
   .WFD15n       ( WFD15n       ),
   .joystick_0   ( joystick_0   ),
   .joystick_1   ( joystick_1   ),
-  .mix_audio_o  ( audio_out    ),
-  .fm_audio_o   ( fm_audio_out ),
+  .psg_snd_o    ( psg_snd      ),
+  .fm_snd_o     ( fm_snd       ),
   .FMIRQn       ( AV_FM_IRQn   )
 );
 

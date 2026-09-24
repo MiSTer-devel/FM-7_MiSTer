@@ -617,6 +617,12 @@ void SimInput::Read() {
 		}
 		for (int k = 0; k < m_keyboardStateCount; k++) {
 			if (m_keyboardState_last[k] != m_keyboardState[k]) {
+				if (suppressScancodes.count(k)) {
+					// Claimed by the harness (capture hotkeys); never reaches
+					// the core, so it cannot also type into the machine.
+					m_keyboardState_last[k] = m_keyboardState[k];
+					continue;
+				}
 				if (k == 57) {
 					// Caps Lock handled via SDL_GetModState above.
 					m_keyboardState_last[k] = m_keyboardState[k];

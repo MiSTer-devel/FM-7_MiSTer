@@ -40,6 +40,8 @@
 #include <map>
 #include <set>
 #include <algorithm>
+#include <cmath>
+#include <sys/stat.h>
 
 #include "sim_console.h"
 #include "sim_bus.h"
@@ -91,7 +93,7 @@ double sc_time_stamp() { return main_time; }
 static DebugConsole console;
 static SimBus       bus(console);
 static SimVideo     video(FM7_WIDTH, FM7_HEIGHT, 0);
-static SimInput     input(0, console);
+static SimInput     input(3, console);   // the three capture hotkeys; see capture_hotkeys()
 static SimAudio     audio(CLK_SYS_HZ, false);
 static SimBlockDevice blk(console);
 
@@ -130,9 +132,18 @@ static bool last_subio_write = false;
 static bool last_subio_read  = false;
 static int  av_dump_frame = 870;
 static bool trace_av_video = false;
-static unsigned au_out_max = 0, au_core_max = 0, au_l_max = 0;
+static unsigned au_out_max = 0, au_core_max = 0;
 static long au_out_nz = 0, au_core_nz = 0;
 static unsigned au_out_seen = 0;
+// FM/SSG balance census. A peak says nothing about loudness -- a single
+// transient sets it -- so what is accumulated here is each source's AC RMS
+// (the standard deviation about its own mean), which is the quantity the ear
+// judges. Both are the value that source CONTRIBUTES to AUDIO_L, so their
+// ratio in dB is the mix balance itself, not a proxy for it.
+static double au_fm_sum = 0.0, au_fm_sq = 0.0;
+static double au_ps_sum = 0.0, au_ps_sq = 0.0;
+static long   au_bal_n  = 0;
+static int    au_fm_raw_min = 0, au_fm_raw_max = 0;
 static long psg_d_strobes = 0, psg_e_strobes = 0, psg_cen_ticks = 0;
 static unsigned psg_bc_seen = 0;
 static unsigned dac_a_max=0, dac_b_max=0, dac_c_max=0;
@@ -168,11 +179,12 @@ static void wav_sample(unsigned l, unsigned r) {
 	wav_acc += WAV_RATE;
 	if (wav_acc < CLK_SYS_HZ) return;
 	wav_acc -= CLK_SYS_HZ;
-	// The core's audio is unsigned over the 14-bit range with silence at 0, so
-	// centre on half of that -- subtracting 32768/2 would leave the whole file
-	// below zero, which is a DC step rather than a centred waveform.
-	const short sl = (short)((int)l - 8192);
-	const short sr = (short)((int)r - 8192);
+	// AUDIO_L/R are signed now (AUDIO_S = 1, rtl/AUDIOMIX.v), silence at 0,
+	// which is what a 16-bit WAV frame already is -- so this is a cast and not
+	// a conversion. It used to subtract 8192 to centre an unsigned mix whose
+	// silence was 0; doing that to a signed sample would push the whole file
+	// off centre by a quarter of full scale.
+	const short sl = (short)l, sr = (short)r;
 	fwrite(&sl, 2, 1, wav_file); fwrite(&sr, 2, 1, wav_file);
 	wav_frames++;
 }
@@ -615,6 +627,98 @@ static void schedule_key_action(const KeyAction& a) {
 // Screenshots
 //----------------------------------------------------------------------------
 
+//----------------------------------------------------------------------------
+// --record / --replay, and the capture hotkeys
+//
+// Ported from the ColecoAdam harness. The reason it exists there is the reason
+// it is wanted here: some faults only show up somewhere a scripted `--key`
+// sequence cannot reach. Albatross's mini-map glitch and its crash on the putt
+// are several menus and a hole of golf in; nobody is going to find the
+// keystroke list for that by guessing, at 2.2 frames per second.
+//
+// So: play it in the GUI, record what you pressed, and hand the file over. A
+// replay is faithful because the core has no randomness -- the same input on
+// the same frames gives the same run. The one imprecision is the same one the
+// ColecoAdam note records: a key pressed part way through a frame replays from
+// that frame's start, so a recording is for getting NEAR a place, not for
+// reproducing a long session exactly.
+//
+// The file is one line per change and is meant to be read and hand-edited --
+// trim it to the fifty frames around the glitch and the replay is a fifty-frame
+// experiment instead of a four-thousand-frame one:
+//
+//     # fm7 recording: <frame> K <ps2> <down> <ext>  |  <frame> J <player> <bits>
+//     1240 K 2d 1 0
+//     1243 K 2d 0 0
+//     1310 J 0 08
+//
+// `ps2` is the PS/2 set-2 code as the core receives it, `down` 1 for make and 0
+// for break, `ext` the E0 prefix flag. Joystick bits are MiSTer order,
+// [0]=right [1]=left [2]=down [3]=up [4]=A [5]=B.
+static FILE*    record_fp = nullptr;
+static uint16_t record_prev_ps2 = 0;
+static bool     record_ps2_init = false;
+static uint8_t  record_prev_joy[2] = { 0, 0 };
+static long     record_events = 0;
+
+struct ReplayEvent { int frame; char kind; unsigned a, b, c; };
+static std::vector<ReplayEvent> replay_events;
+static size_t replay_next = 0;
+static std::string replay_path;
+
+// Capture: [ starts, ] stops, \ grabs one. NOT function keys -- a Mac laptop
+// puts those behind fn, which makes them useless while a hand is on the game.
+// These three are claimed by the harness and suppressed before they reach the
+// core (SimInput::suppressScancodes), so grabbing a frame does not also type a
+// bracket into the machine.
+const int input_cap_start = 0;   // [
+const int input_cap_stop  = 1;   // ]
+const int input_cap_one   = 2;   // backslash
+static std::string capture_dir = "captures";
+static bool capturing = false;
+static int  captured = 0;
+static int  capture_from = -1, capture_to = -1;
+
+static void dump_av_vram(int frame, const char* dest = nullptr);
+static void dump_av_palette(int frame, const char* dest = nullptr);
+static void save_screenshot(int frame);
+static void load_replay(const std::string& path);
+
+// A picture of a glitch is only a picture of a glitch. What makes a capture
+// worth keeping is the state that produced it: the three VRAM planes and the
+// palette, which is exactly what the 77AVEMU comparison already dumps, so the
+// existing tooling reads these without changing anything.
+static void capture_frame(int frame, const char* why) {
+	mkdir(capture_dir.c_str(), 0755);
+	char name[512];
+	snprintf(name, sizeof(name), "%s/cap_%05d.png", capture_dir.c_str(), frame);
+	const std::string saved_override = screenshot_name_override;
+	screenshot_name_override = name;
+	save_screenshot(frame);
+	screenshot_name_override = saved_override;
+	snprintf(name, sizeof(name), "%s/cap_%05d.vram", capture_dir.c_str(), frame);
+	dump_av_vram(frame, name);
+	snprintf(name, sizeof(name), "%s/cap_%05d.pal", capture_dir.c_str(), frame);
+	dump_av_palette(frame, name);
+	captured++;
+	printf("capture %s: frame %d -> %s (+ vram, palette)\n", why, frame, name);
+	fflush(stdout);
+}
+
+static void capture_start(int frame) {
+	capturing = true;
+	captured = 0;
+	mkdir(capture_dir.c_str(), 0755);
+	printf("capture: started at frame %d, writing to %s/\n", frame, capture_dir.c_str());
+	fflush(stdout);
+}
+
+static void capture_stop(int frame) {
+	capturing = false;
+	printf("capture: stopped at frame %d, %d frames captured\n", frame, captured);
+	fflush(stdout);
+}
+
 static void save_screenshot(int frame) {
 	if (!output_ptr) {
 		fprintf(stderr, "screenshot: no framebuffer\n");
@@ -693,8 +797,11 @@ static void kanji_check(void) {
 	printf("KANJI CHECK: %d words sampled, %d mismatched\n", checked, bad);
 }
 
-static void dump_av_vram(int frame) {
-	const char *vramOut = getenv("FM7_VRAM_DUMP");
+// `dest` overrides FM7_VRAM_DUMP so a capture can put the dump beside its PNG.
+// With dest null this behaves exactly as before: write only if the env var is
+// set, which is how the 77AVEMU comparison drives it.
+static void dump_av_vram(int frame, const char* dest) {
+	const char *vramOut = dest ? dest : getenv("FM7_VRAM_DUMP");
 	// NOT AV-only. The FM-7 uses bank 0 of the same CRTRAM and the reference
 	// dumps all 96 KB under --fm7 too, so gating this on the machine made
 	// FM7_VRAM_DUMP silently write nothing for every FM-7 title -- the one
@@ -744,8 +851,8 @@ static void dump_av_vram(int frame) {
 // wrong before here. Writes one line per differing-from-default entry is not
 // worth it -- dump all 4096 as `index blue red green`, one per line, and diff
 // it against a replay of the trace.
-static void dump_av_palette(int frame) {
-	const char *palOut = getenv("FM7_PAL_DUMP");
+static void dump_av_palette(int frame, const char* dest) {
+	const char *palOut = dest ? dest : getenv("FM7_PAL_DUMP");
 	if (!palOut) return;
 	const auto *r = VL_ROOT(top);
 	FILE *fp = fopen(palOut, "w");
@@ -808,6 +915,23 @@ static void print_usage(const char* argv0) {
 	printf("  --screenshot <n[,n...]>   Save a PNG at each listed frame\n");
 	printf("  --screenshot-name <path>  Exact output path (single screenshot only)\n");
 	printf("  --screenshot-prefix <s>   Filename prefix (default \"screenshot\")\n");
+	printf("\n");
+	printf("Record / replay / capture (for faults a scripted --key cannot reach):\n");
+	printf("  --record <file>           While you play in the GUI, write one line per\n");
+	printf("                            input change. Hand the file back to replay it.\n");
+	printf("  --replay <file>           Drive the keyboard and sticks from such a file.\n");
+	printf("                            Faithful because the core has no randomness; a\n");
+	printf("                            key pressed mid-frame replays from that frame's\n");
+	printf("                            start, so use it to get NEAR a place, then trim\n");
+	printf("                            the file to the frames that matter.\n");
+	printf("  --capture-dir <dir>       Where captures land (default \"captures\")\n");
+	printf("  --capture-frames <a-b>    Headlessly capture every frame in a..b -- replay\n");
+	printf("                            a recorded session with different probes on.\n");
+	printf("  In the GUI: [ starts capturing, ] stops, \\ grabs one frame. Each capture\n");
+	printf("  writes the picture AND the VRAM planes and palette that produced it, which\n");
+	printf("  is what separates \"the core drew this wrongly\" from \"the game put this in\n");
+	printf("  VRAM\". Those three keys are claimed by the harness and do not reach the\n");
+	printf("  machine. They are not function keys because a Mac puts those behind fn.\n");
 	printf("\nInput injection (frame-scheduled):\n");
 	printf("  --key <frame>:<text>      Type text, or @NAME for a named key.\n");
 	printf("                            Prefix with @CTRL+ @GRAPH+ @KANA+ @SHIFT+\n");
@@ -910,6 +1034,24 @@ static int parse_args(int argc, char** argv) {
 		else if (a == "--pc-profile-sub")  { pc_profile = true; pc_profile_sub = true; }
 		else if (a == "--screenshot-name")   { const char* v = next(); if (v) screenshot_name_override = v; }
 		else if (a == "--screenshot-prefix") { const char* v = next(); if (v) screenshot_prefix = v; }
+		else if (a == "--record") {
+			const char* v = next();
+			if (v) {
+				record_fp = fopen(v, "w");
+				if (!record_fp) { fprintf(stderr, "cannot write %s\n", v); return 1; }
+				fprintf(record_fp, "# fm7 recording: <frame> K <ps2> <down> <ext> | <frame> J <player> <bits>\n");
+			}
+		}
+		else if (a == "--replay")      { const char* v = next(); if (v) { replay_path = v; load_replay(replay_path); } }
+		else if (a == "--capture-dir") { const char* v = next(); if (v) capture_dir = v; }
+		else if (a == "--capture-frames") {
+			const char* v = next();
+			if (v) {
+				int lo = 0, hi = 0;
+				if (sscanf(v, "%d-%d", &lo, &hi) == 2) { capture_from = lo; capture_to = hi; }
+				else { fprintf(stderr, "--capture-frames wants A-B, got %s\n", v); return 1; }
+			}
+		}
 		else if (a == "--screenshot") {
 			const char* v = next();
 			if (v) {
@@ -1138,8 +1280,22 @@ static void print_run_stats() {
 	       (stat_d40a_rd == 0 && stat_d40a_wr == 0)
 	           ? "   <- sub never touched the BUSY flag" : "");
 	printf("I/O cycles ($fdxx): %ld\n", stat_io_cycles);
-	printf("audio             : PSG max %u (nonzero %ld)  core_audio max %u (nonzero %ld)  AUDIO_L max %u\n",
-	       au_out_max, au_out_nz, au_core_max, au_core_nz, au_l_max);
+	printf("audio             : SSG term max %u (nonzero %ld)  |mix| max %u (nonzero %ld)\n",
+	       au_out_max, au_out_nz, au_core_max, au_core_nz);
+	if (au_bal_n) {
+		const double n  = (double)au_bal_n;
+		const double fv = au_fm_sq / n - (au_fm_sum / n) * (au_fm_sum / n);
+		const double pv = au_ps_sq / n - (au_ps_sum / n) * (au_ps_sum / n);
+		const double fr = fv > 0 ? sqrt(fv) : 0.0;
+		const double pr = pv > 0 ? sqrt(pv) : 0.0;
+		printf("audio balance     : FM rms %.1f  SSG rms %.1f  (of +-32767)   raw fm_snd %d .. %d\n",
+		       fr, pr, au_fm_raw_min, au_fm_raw_max);
+		if (fr > 0 && pr > 0)
+			printf("                    FM is %+.1f dB against the SSG in the mix\n",
+			       20.0 * log10(fr / pr));
+		else
+			printf("                    one half stayed silent, so there is no ratio to report\n");
+	}
 	// The command register replaced the {bdir,bc1} pair when the PSG became a
 	// jt03: the FM-7 writes 0-3 here, the FM77AV also uses 4 (status) and 9
 	// (joystick) through $fd15. A run with $fd0e writes but no command 2 is
@@ -1236,10 +1392,96 @@ static void print_run_stats() {
 	fflush(stdout);
 }
 
+// Called every cycle: ps2_key changes between frames, not on frame boundaries,
+// so a per-frame poll would miss keys. Comparing a 16-bit word is cheap enough
+// to sit in the inner loop.
+static void record_tick(int frame) {
+	if (!record_fp) return;
+	const uint16_t k = (uint16_t)top->ps2_key;
+	if (!record_ps2_init) { record_prev_ps2 = k; record_ps2_init = true; }
+	else if (k != record_prev_ps2) {
+		// bit10 is the strobe toggle, bit9 make/break, bit8 the E0 flag.
+		// The toggle is regenerated on replay, so it is not written out.
+		fprintf(record_fp, "%d K %02x %d %d\n", frame, k & 0xff,
+		        (k >> 9) & 1, (k >> 8) & 1);
+		fflush(record_fp);
+		record_prev_ps2 = k;
+		record_events++;
+	}
+	for (int p = 0; p < 2; p++) {
+		const uint8_t j = p ? (uint8_t)top->joystick_1 : (uint8_t)top->joystick_0;
+		if (j != record_prev_joy[p]) {
+			fprintf(record_fp, "%d J %d %02x\n", frame, p, j);
+			fflush(record_fp);
+			record_prev_joy[p] = j;
+			record_events++;
+		}
+	}
+}
+
+static void load_replay(const std::string& path) {
+	FILE* f = fopen(path.c_str(), "r");
+	if (!f) { fprintf(stderr, "cannot read %s\n", path.c_str()); exit(1); }
+	char line[256];
+	int lineno = 0;
+	while (fgets(line, sizeof(line), f)) {
+		lineno++;
+		char* p = line;
+		while (*p == ' ' || *p == '\t') p++;
+		if (*p == '#' || *p == '\n' || *p == '\0') continue;
+		int frame; char kind; unsigned a = 0, b = 0, c = 0;
+		if (sscanf(p, "%d %c %x %u %u", &frame, &kind, &a, &b, &c) >= 3)
+			replay_events.push_back({ frame, kind, a, b, c });
+		else
+			fprintf(stderr, "%s:%d: cannot parse, skipped: %s", path.c_str(), lineno, p);
+	}
+	fclose(f);
+	std::stable_sort(replay_events.begin(), replay_events.end(),
+	                 [](const ReplayEvent& x, const ReplayEvent& y) { return x.frame < y.frame; });
+	printf("replay: %zu events from %s, last at frame %d\n",
+	       replay_events.size(), path.c_str(),
+	       replay_events.empty() ? -1 : replay_events.back().frame);
+}
+
+// Replayed key events go through the SAME queue --key uses, so they inherit its
+// pacing (one event per keyEventWait cycles). That is what keeps two keys
+// recorded in one frame from collapsing into a single strobe the core never
+// sees twice.
+static void replay_apply(int frame) {
+	while (replay_next < replay_events.size() && replay_events[replay_next].frame <= frame) {
+		const ReplayEvent& e = replay_events[replay_next++];
+		if (e.kind == 'K')
+			input.keyEvents.push(SimInput_PS2KeyEvent(0, e.b != 0, e.c != 0, e.a));
+		else if (e.kind == 'J' && e.a < 2)
+			joy_state[e.a] = (uint8_t)e.b;
+	}
+}
+
+static void capture_hotkeys(int frame) {
+	static bool prev_start = false, prev_stop = false, prev_one = false;
+	const bool start = input.inputs[input_cap_start];
+	const bool stop  = input.inputs[input_cap_stop];
+	const bool one   = input.inputs[input_cap_one];
+
+	if (start && !prev_start && !capturing) capture_start(frame);
+	if (stop  && !prev_stop  &&  capturing) capture_stop(frame);
+	if (one   && !prev_one)                 capture_frame(frame, "single");
+
+	prev_start = start; prev_stop = stop; prev_one = one;
+}
+
 static void apply_frame_actions(int frame) {
 	static int last_frame = -1;
 	if (frame == last_frame) return;
 	last_frame = frame;
+
+	replay_apply(frame);
+	// --capture-frames A-B: re-capture a recorded session headlessly, with
+	// whatever probes this build has, without touching the recording.
+	if (capture_from >= 0 && frame >= capture_from && frame <= capture_to)
+		capture_frame(frame, "range");
+	else if (capturing)
+		capture_frame(frame, "run");
 
 	for (auto& pk : pending_keys)
 		if (pk.frame == frame)
@@ -1565,17 +1807,32 @@ static void sim_cycle() {
 		if ((unsigned)top->dbg_dac_b > dac_b_max) dac_b_max = top->dbg_dac_b;
 		if ((unsigned)top->dbg_dac_c > dac_c_max) dac_c_max = top->dbg_dac_c;
 	}
-	{   // audio-path census: is the PSG producing signal, and does it survive?
-		const unsigned ao = top->dbg_audio_out, ca = top->dbg_core_audio;
+	{   // audio-path census: is each chip half producing signal, and at what
+		// level relative to the other? Both terms below are exactly what
+		// rtl/AUDIOMIX.v adds into the sum, so their ratio IS the mix balance.
+		const int raw = (int)(short)top->dbg_fm_snd;
+		const unsigned ao = (unsigned)top->dbg_psg_snd << 4;   // AUDIOMIX SSG term
+		const int      fc = raw >> 1;                          // AUDIOMIX FM term
+		const int      ca = (int)(short)top->dbg_core_audio;
+		const unsigned cm = (unsigned)(ca < 0 ? -ca : ca);
 		if (ao > au_out_max)  au_out_max  = ao;
-		if (ca > au_core_max) au_core_max = ca;
-		if ((unsigned)top->AUDIO_L > au_l_max) au_l_max = top->AUDIO_L;
+		if (cm > au_core_max) au_core_max = cm;
 		if (ao) au_out_nz++;
 		if (ca) au_core_nz++;
 		au_out_seen |= ao;
+
+		const double fm = (double)fc, ps = (double)ao;
+		au_fm_sum += fm; au_fm_sq += fm * fm;
+		au_ps_sum += ps; au_ps_sq += ps * ps;
+		au_bal_n++;
+		if (raw < au_fm_raw_min) au_fm_raw_min = raw;
+		if (raw > au_fm_raw_max) au_fm_raw_max = raw;
 	}
 	wav_sample(top->AUDIO_L, top->AUDIO_R);
-	if (!headless) audio.Clock(top->AUDIO_L, top->AUDIO_R);
+	// SimAudio::Clock takes signed shorts. It was being handed the old
+	// unsigned mix, so everything above 32767 wrapped to full negative and the
+	// windowed sim's own playback was not the core's audio.
+	if (!headless) audio.Clock((signed short)top->AUDIO_L, (signed short)top->AUDIO_R);
 
 	// --- falling edge ------------------------------------------------
 	top->clk_sys = 0;
@@ -1593,6 +1850,7 @@ static void sim_cycle() {
 	if (tfp && in_trace_window()) tfp->dump(main_time);
 #endif
 	main_time++;
+	record_tick(video.count_frame);
 	apply_frame_actions(video.count_frame);
 }
 
@@ -1735,6 +1993,16 @@ int main(int argc, char** argv, char** env) {
 	bus.ioctl_dout     = &top->ioctl_dout;
 	input.ps2_key      = &top->ps2_key;
 
+	// Capture hotkeys. SetMapping wires inputs[] to a host scancode;
+	// suppressScancodes stops that same key being forwarded to the FM-7 as a
+	// keystroke, which would otherwise type a bracket into the running game.
+	input.SetMapping(input_cap_start, SDL_SCANCODE_LEFTBRACKET);
+	input.SetMapping(input_cap_stop,  SDL_SCANCODE_RIGHTBRACKET);
+	input.SetMapping(input_cap_one,   SDL_SCANCODE_BACKSLASH);
+	input.suppressScancodes.insert(SDL_SCANCODE_LEFTBRACKET);
+	input.suppressScancodes.insert(SDL_SCANCODE_RIGHTBRACKET);
+	input.suppressScancodes.insert(SDL_SCANCODE_BACKSLASH);
+
 	// Block device -> the FDC. The core exposes two drive slots, while the
 	// block-device data/address/valid bus remains shared by hps_io.
 	blk.sd_lba[0]      = &top->sd_lba[0];
@@ -1853,6 +2121,7 @@ int main(int argc, char** argv, char** env) {
 			if (event.type == SDL_QUIT) done = true;
 		}
 		input.Read();
+		capture_hotkeys(video.count_frame);
 
 		// StartFrame only does the backend NewFrame calls; the ImGui frame
 		// scope itself has to be opened here, and UpdateTexture() closes it

@@ -8,6 +8,7 @@
 #include "verilated.h"
 #include <queue>
 #include <vector>
+#include <set>
 
 
 struct SimInput_PS2KeyEvent {
@@ -33,6 +34,11 @@ public:
 	int mappings[16];
 
 	SData* ps2_key = NULL;
+	// Host scancodes the harness claims for itself and must NOT forward to the
+	// core. The capture hotkeys are ordinary printable keys -- see sim_main.cpp
+	// for why they are not function keys -- so without this, grabbing a frame
+	// also types a bracket into whatever the machine is running.
+	std::set<int> suppressScancodes;
 	std::queue<SimInput_PS2KeyEvent> keyEvents;
 	unsigned int keyEventTimer = 0;
 	unsigned int keyEventWait = 50000;

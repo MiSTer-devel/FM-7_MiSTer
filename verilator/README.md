@@ -33,12 +33,25 @@ Both CPUs are `mc6809i` (Verilog), so there is no VHDL and no ghdl step.
 `$readmemb("./audio/…")` relative to the working directory. **Run the binary from
 this directory.**
 
-Speed is **about 1 simulated frame per second** on a Ryzen-class desktop -- a
-400-frame run takes seven minutes and a 16,000-frame run takes four and a half
-hours. (Superseded claim: *"around 6 frames per second, so a 400-frame run takes
-about a minute."*) The cost is dominated by clocking the whole design at 48 MHz
-`clk_sys`; faking that would change the phase relationship between the two CPUs
-and the video chain, which is exactly what the core depends on.
+Speed is **about 2.2 simulated frames per second**, measured 2026-09-21 on an
+Apple-silicon Mac with Verilator 5.044: 120 frames in 54.1 s, i.e. 0.45 s a
+frame and about 27x slower than the machine runs. Budget from that: 1000 frames
+~7.5 min, 2000 ~15 min, 10,000 ~75 min. That figure was taken with a load
+average of 36, so an idle box does better -- **time your own before planning an
+afternoon around it**:
+
+```sh
+time ./obj_dir/Vemu --headless --machine fm77av --stop-at-frame 120
+```
+
+(Superseded claims, both measured and both once true: *"around 6 frames per
+second"*, and *"about 1 frame per second"* -- the latter on Verilator 4.204,
+which 5.044 roughly doubles. The number moves with the toolchain, which is why
+the command to re-measure it is above.)
+
+The cost is dominated by clocking the whole design at 48 MHz `clk_sys`; faking
+that would change the phase relationship between the two CPUs and the video
+chain, which is exactly what the core depends on.
 
 **Do not reach for `--threads`. It is 9x SLOWER and it changes the answer.**
 Measured on the same 400-frame FM77AV disk run, one build with and one without:
@@ -131,6 +144,70 @@ wired now, from `core.v` through `SOUND.v` onto the PSG's I/O ports, and
 Everything schedulable is in **frames**, not cycles, because frames stay
 meaningful across clock changes; a cycle-based schedule has to be rewritten
 every time a divider in `rtl/clocks.svh` moves.
+
+## Record, replay and capture
+
+For a fault a scripted `--key` cannot reach. Albatross's mini-map glitch and its
+crash on the putt are several menus and most of a hole of golf in; at 2.2 frames
+per second nobody is going to find that keystroke list by guessing. So play it
+once in the GUI, record what you pressed, and replay it as often as the question
+needs. Ported from the ColecoAdam harness (`f136310`), adapted for a machine
+whose primary input is a keyboard rather than a joystick.
+
+```sh
+./obj_dir/Vemu --machine fm77av --disk game.d77 --record alba.txt   # play it
+./obj_dir/Vemu --headless --machine fm77av --disk game.d77 \
+    --replay alba.txt --stop-at-frame 4000                          # and again
+```
+
+The file is one line per input change, meant to be read and hand-edited:
+
+```
+# fm7 recording: <frame> K <ps2> <down> <ext> | <frame> J <player> <bits>
+1240 K 2d 1 0
+1243 K 2d 0 0
+1310 J 0 08
+```
+
+`ps2` is the set-2 code the core receives, `down` 1 for make and 0 for break,
+`ext` the E0 flag; joystick bits are MiSTer order, `[0]`=right `[1]`=left
+`[2]`=down `[3]`=up `[4]`=A `[5]`=B. **Trim it.** A recording cut to the fifty
+frames around the glitch is a fifty-frame experiment instead of a
+four-thousand-frame one.
+
+**A replay is faithful, but it is not a recording of a session.** The core has
+no randomness, so the same input on the same frames gives the same run -- a
+scripted `--key` run and a replay of its own recording produce byte-identical
+run summaries, instruction counts and I/O cycles included, which is how this was
+checked. The imprecision is that a key pressed part way through a frame replays
+from that frame's start, so over thousands of frames a long session can diverge.
+Use it to get NEAR a place, then trim.
+
+Replayed keys go through the same queue `--key` uses and inherit its pacing, so
+two keys recorded in one frame do not collapse into a single strobe.
+
+### Capturing a glitch
+
+In the GUI, `[` starts capturing every frame, `]` stops, `\` grabs one.
+**Not function keys** -- a Mac puts those behind `fn`, which is useless with a
+hand on the game. Each capture writes, into `--capture-dir` (default
+`captures/`):
+
+| file | what |
+|---|---|
+| `cap_NNNNN.png` | the picture |
+| `cap_NNNNN.vram` | all 96 KB of CRTRAM, the same layout the 77AVEMU comparison dumps |
+| `cap_NNNNN.pal` | the palette, as `index r g b` lines |
+
+The second and third are the point. A screenshot of a glitch is only a picture
+of a glitch; with the VRAM beside it you can re-render what the core was *told*
+to draw and say whether the fault is the display path or the game putting the
+wrong bytes there. `--capture-frames A-B` does the same headlessly, so a
+recorded session can be re-captured later with different probes compiled in.
+
+Those three keys are claimed by the harness (`SimInput::suppressScancodes`) and
+never reach the machine -- otherwise grabbing a frame would also type a bracket
+into whatever is running.
 
 ## Disassembly and tracing
 
