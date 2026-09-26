@@ -35,7 +35,7 @@ Installing by hand instead:
 
 | copy this | to here |
 |---|---|
-| `releases/FM-7_<date>.rbf` | `/media/fat/_Computer/FM-7.rbf` |
+| `releases/FM-7_<date>.rbf`, the newest date | `/media/fat/_Computer/FM-7.rbf` |
 | `releases/boot.rom` | `/media/fat/games/FM-7/boot.rom` |
 | `releases/boot1.rom` | `/media/fat/games/FM-7/boot1.rom` *(optional)* |
 
