@@ -74,9 +74,10 @@ assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
 //   12        Machine family             machine_av -> AV memory/video/I/O
 //   18:13     Disk 1 / Disk 2 sub-image  disk_index[0] / disk_index[1]
 //   19        System ROM set             romset_sel -> ROMLOAD
+//   20        Joypad keys                joykey_en -> JOYKEYS
 //   122:121   Aspect ratio               VIDEO_ARX / VIDEO_ARY
 //
-// Bits 1..7 and 20..120 are free. The hole at 1..7 is where the template's
+// Bits 1..7 and 21..120 are free. The hole at 1..7 is where the template's
 // "TV Mode" (O[2]) and "Noise" (O[4:3]) demo options used to sit; they drove
 // nothing in this core and are gone. The hole is left as-is deliberately --
 // renumbering would only invalidate saved .cfg files for no gain.
@@ -101,14 +102,18 @@ localparam CONF_STR = {
   // baked into the .rbf, which are set 0's. Changing this resets the machine:
   // swapping the BASIC ROM under a running interpreter is not a thing.
   "O[19],System ROM,Japanese,Spanish;",
+  // Pad 1 as keys, for the many titles that never read the joystick port:
+  // d-pad = keypad 1-9, letting go = keypad 5 (the FM-7's stop key). The PSG
+  // joystick port keeps working either way. See rtl/JOYKEYS.v for the map.
+  "O[20],Joypad keys,Off,On;",
   "-;",
   "O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
   "-;",
   "T[0],Reset;",
   "R[0],Reset and close OSD;",
   // J1/jn MUST stay last, after the reset entries. 
-  "J1,Button A,Button B;",
-  "jn,A,B;",
+  "J1,Button A,Button B,Button X,Button Y,L,R,Select,Start;",
+  "jn,A,B,X,Y,L,R,Select,Start;",
   "v,4;",
   "V,v",`BUILD_DATE
 };
@@ -389,6 +394,8 @@ core u_core(
   .ps2_key     ( ps2_key       ),
   .joystick_0  ( joy1[5:0]     ),
   .joystick_1  ( joy2[5:0]     ),
+  .joykey_pad  ( joy1[11:0]    ),
+  .joykey_en   ( status[20]    ),
   .SVIDEOCLK   ( SVIDEOCLK     ),
   .ce_pix      ( ce_pix        ),
   .psg_snd     ( psg_snd       ),

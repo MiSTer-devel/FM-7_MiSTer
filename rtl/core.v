@@ -14,6 +14,11 @@ module core(
   // Joysticks (MiSTer order: [0]=right [1]=left [2]=down [3]=up [4]=A [5]=B)
   input [5:0] joystick_0,
   input [5:0] joystick_1,
+  // Player 1's pad, all twelve bits ([6]X [7]Y [8]L [9]R [10]Select [11]Start
+  // above the six the PSG port takes), and the OSD switch that turns it into
+  // keys -- see JOYKEYS.v.
+  input [11:0] joykey_pad,
+  input        joykey_en,
   input cin,
   output motor,
   output SVIDEOCLK,
@@ -1368,10 +1373,23 @@ PAL PAL(
   .ANALOG_RGB  ( AV_ANALOG_RGB )
 );
 
+// The pad joins the keyboard here, ahead of the encoder, so its keys go through
+// every table, repeat and routing rule a real key does.
+wire [10:0] ps2_key_kb;
+JOYKEYS u_JOYKEYS(
+  .CLK       ( CLKSYS             ),
+  .RESETn    ( RESETBn            ),
+  .ENABLE    ( joykey_en          ),
+  .SCAN_MODE ( AV_CODING == 2'd2  ),
+  .JOY       ( joykey_pad         ),
+  .PS2_IN    ( ps2_key            ),
+  .PS2_OUT   ( ps2_key_kb         )
+);
+
 KEYBOARD KEYBOARD(
   .CLKSYS     ( CLKSYS       ),
   .RESETBn    ( RESETBn      ),
-  .ps2_key    ( ps2_key      ),
+  .ps2_key    ( ps2_key_kb   ),
   .MDATA_in   ( MDATABUS_out ),
   .SKDATA     ( SKDATA       ),
   .MKDATA     ( MKDATA       ),

@@ -319,6 +319,7 @@ V_SRC = \
 	$(RTL)/FDC.v \
 	$(RTL)/FLAGS.v \
 	$(RTL)/KEYBOARD.v \
+	$(RTL)/JOYKEYS.v \
 	$(RTL)/AVKEYBOARD.v \
 	$(RTL)/KANJI.v \
 	$(RTL)/m139.v \
@@ -477,6 +478,11 @@ avkeyboard-test: avkeyboard_tb.sv ../rtl/AVKEYBOARD.v
 
 # Directed check for the FM-7 key tables, the $FD01 hold and reset, and the
 # auto-repeat timer. About two simulated seconds, so it takes a little while.
+joykeys-test: joykeys_tb.sv ../rtl/JOYKEYS.v
+	verilator --binary --timing -Wno-fatal --Mdir /tmp/fm7-joykeys-obj \
+		--top-module joykeys_tb joykeys_tb.sv ../rtl/JOYKEYS.v
+	/tmp/fm7-joykeys-obj/Vjoykeys_tb
+
 keyboard-test: keyboard_tb.sv ../rtl/KEYBOARD.v
 	verilator --binary --timing -Wno-fatal --Mdir /tmp/fm7-keyboard-obj \
 		--top-module keyboard_tb keyboard_tb.sv ../rtl/KEYBOARD.v
@@ -515,7 +521,7 @@ avpixel-test: avpixel_tb.sv ../rtl/AVPIXEL.v
 av-boot-test: all av_boot_test.sh
 	bash av_boot_test.sh
 
-.PHONY: all run test clean clean-shots avmem-test crtram-test avkeyboard-test keyboard-test smem-test mb60h010-test pal-test avpixel-test avhdraw-test sound-test kanji-test av-boot-test
+.PHONY: all run test clean clean-shots avmem-test crtram-test avkeyboard-test keyboard-test joykeys-test smem-test mb60h010-test pal-test avpixel-test avhdraw-test sound-test kanji-test av-boot-test
 
 # Disassembler self-check. Standalone -- no Verilator, no core.
 distest: dis6809_test.cpp dis6809.cpp dis6809.h

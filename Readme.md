@@ -35,7 +35,7 @@ Installing by hand instead:
 
 | copy this | to here |
 |---|---|
-| `releases/FM-7_<date>.rbf` | `/media/fat/_Computer/FM-7.rbf` |
+| `releases/FM-7_<date>.rbf`, the newest date | `/media/fat/_Computer/FM-7.rbf` |
 | `releases/boot.rom` | `/media/fat/games/FM-7/boot.rom` |
 | `releases/boot1.rom` | `/media/fat/games/FM-7/boot1.rom` *(optional)* |
 
@@ -132,6 +132,7 @@ Alexandria's, for instance, end in `-loadm`.
 | **Boot ROM** | `0 disk` boots floppies, `2 dos-a` boots OS-9 |
 | **Machine** | FM-7, or FM77AV |
 | **System ROM** | Japanese or Spanish system ROMs — see below |
+| **Joypad keys** | play keyboard-only games on pad 1 — see [Joysticks](#joysticks) |
 | **Aspect ratio** | original 4:3, or fill the screen |
 
 ## Keyboard
@@ -183,6 +184,23 @@ Shift stops a repeat. **Left Ctrl + Shift + 0** turns key repeat off and
 Two ports, mapped to MiSTer players 1 and 2, with **Button A** and **Button B**.
 Plenty of FM-7 games are keyboard-only — of 301 disk images, only 25 ever read
 the joystick ports at all, so if a game ignores your pad it is probably the game.
+
+**Joypad keys** in the OSD turns pad 1 into keys, for the games that never read
+the joystick. The FM-7 steers with the numeric keypad and stops on keypad 5,
+because its keyboard never reports a key being let go — so letting go of the
+d-pad presses 5 for you:
+
+| pad | FM-7 key |
+|---|---|
+| d-pad, 8 ways | keypad 1–4, 6–9 |
+| d-pad released | keypad 5, the stop key |
+| A / B | RETURN / SPACE |
+| X / Y | keypad 5 / CTRL |
+| Start / Select | ESC / PF1 |
+| L / R | N / Y |
+
+The joystick ports keep working with it on, so it is safe to leave on for a
+game that reads both.
 
 ## Spanish Secoinsa FM-7
 
