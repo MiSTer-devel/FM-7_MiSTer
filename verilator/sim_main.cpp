@@ -120,6 +120,7 @@ static std::string romset_path;
 // 0 selects the first disk and is what an ordinary single-disk image wants.
 static int  opt_disk_index [2] = {0, 0};
 static bool opt_tape_audio = false;  // status[9]
+static bool opt_joykeys = false;     // status[20] "Joypad keys"
 
 static bool  trace_io  = false;
 static bool  trace_io_unknown_only = false;
@@ -950,6 +951,7 @@ static void print_usage(const char* argv0) {
 	printf("                              up down left right a b fire none\n");
 	printf("                            e.g. --joystick 300:up+a  --joystick 400:right:120\n");
 	printf("  --joystick2 <frame>:<b>[:<hold>]   same for joystick 2\n");
+	printf("  --joykeys                 OSD \"Joypad keys\" on: --joystick also types keypad keys (rtl/JOYKEYS.v)\n");
 	printf("  --joystick-hold <frames>  Default hold for --joystick (default 10)\n");
 	printf("\nTracing:\n");
 	printf("  --trace-io [file]         Log every $fdxx read/write\n");
@@ -1016,6 +1018,7 @@ static int parse_args(int argc, char** argv) {
 		else if (a == "--disk-writable") { disk_persist_writes = true; }
 		else if (a == "--disk1")      { const char* v = next(); if (v) disk_path1 = v; }
 		else if (a == "--tape-audio") opt_tape_audio = true;
+		else if (a == "--joykeys")    opt_joykeys = true;
 		else if (a == "--bootrom")    { const char* v = next(); if (v) opt_bootrom = atoi(v) & 3; }
 		else if (a == "--disk-index")  { const char* v = next(); if (v) opt_disk_index[0] = atoi(v) & 7; }
 		else if (a == "--disk1-index") { const char* v = next(); if (v) opt_disk_index[1] = atoi(v) & 7; }
@@ -1527,6 +1530,7 @@ static void sim_cycle() {
 	top->machine_av  = opt_machine_av;
 	top->romset_sel  = opt_romset_sel;
 	top->tape_audio  = opt_tape_audio;
+	top->joykey_en   = opt_joykeys;
 	top->tape_rewind = (rewind_hold > 0) || tape_rewind_pulse;
 	if (rewind_hold > 0) rewind_hold--;
 

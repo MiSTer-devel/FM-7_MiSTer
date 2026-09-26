@@ -49,6 +49,8 @@ module emu
 	// MiSTer bit order: [0]=right [1]=left [2]=down [3]=up [4]=A [5]=B.
 	input   [5:0] joystick_0,
 	input   [5:0] joystick_1,
+	// "Joypad keys" (status[20]): joystick_0 also drives rtl/JOYKEYS.v.
+	input         joykey_en,
 
 	// HPS ioctl download. index 1 == "F1,t77" in CONF_STR.
 	input         ioctl_download,
@@ -267,6 +269,8 @@ core u_core(
   .ps2_key     ( ps2_key     ),
   .joystick_0  ( joystick_0  ),
   .joystick_1  ( joystick_1  ),
+  .joykey_pad  ( { 6'd0, joystick_0 } ),
+  .joykey_en   ( joykey_en   ),
   .SVIDEOCLK   ( SVIDEOCLK   ),
   .ce_pix      ( ce_pix      ),
   .psg_snd     ( psg_snd     ),
