@@ -233,19 +233,43 @@ end
 
 wire sftlod = ~SFTLODn;
 
-always @(posedge SFTCLK, posedge sftlod, posedge clr1) begin
+// The 640-mode shifters load SYNCHRONOUSLY, like a 74LS166: the SFTCLK edge
+// that loads the next byte still clocks the old byte's last bit into qh.
+//
+// They used to load asynchronously on `posedge sftlod`. SFTLODn opens one
+// CLKSYS after the cell boundary, i.e. BETWEEN two shift clocks, so the load
+// overwrote the old byte before its last pixel had been clocked out -- every
+// byte lost its LSB, and its MSB was shown twice. Measured against 77AVEMU on
+// Xevious's title, sim and DE10-Nano alike: every mismatch in the logo (839 of
+// 839) is screen column x%8 == 7 holding the NEXT byte's first pixel. Solid
+// fills hide it; checkerboard dither breaks at every eighth pixel.
+//
+// Exactly one SFTCLK edge falls inside the three-CLKSYS load window
+// (MB60H010.v, sftlodn_d), and it is the edge that used to show the duplicate,
+// so the other seven pixels keep their timing and HBLANK_DISP's +3 stands.
+//
+// The blanking clear is synchronous for the same reason. SBLANKn drops at
+// xx=640, one edge BEFORE the line's last pixel is clocked into qh, so an
+// asynchronous clear wiped it: with the load fixed, every remaining Wizardry IV
+// mismatch against 77AVEMU (52 of 52) was column 639. Clocked, that edge still
+// hands the last pixel to qh while the register empties. It also takes a
+// combinational decode (m25_3) off an asynchronous clear, a glitch path.
+//
+// The 320-mode B/R/G*SHIFT registers below are left asynchronous: that path
+// matches 77AVEMU on Deep Forest and nothing measured implicates it.
+always @(posedge SFTCLK) begin
   if (clr1) SFT1 <= 8'd0;
   else if (sftlod) SFT1 <= SVDATAB;
   else if (~AV_MODE_320 | SFTSTEP) SFT1 <= { SFT1[6:0], 1'b0 };
 end
 
-always @(posedge SFTCLK, posedge sftlod, posedge clr2) begin
+always @(posedge SFTCLK) begin
   if (clr2) SFT2 <= 8'd0;
   else if (sftlod) SFT2 <= SVDATAR;
   else if (~AV_MODE_320 | SFTSTEP) SFT2 <= { SFT2[6:0], 1'b0 };
 end
 
-always @(posedge SFTCLK, posedge sftlod, posedge clr3) begin
+always @(posedge SFTCLK) begin
   if (clr3) SFT3 <= 8'd0;
   else if (sftlod) SFT3 <= SVDATAG;
   else if (~AV_MODE_320 | SFTSTEP) SFT3 <= { SFT3[6:0], 1'b0 };
