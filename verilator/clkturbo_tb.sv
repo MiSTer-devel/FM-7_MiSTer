@@ -4,9 +4,11 @@
 //
 // The main CPU's clock is switched between SCLK1 (8 MHz) and CLKSYS/2 (24 MHz)
 // while it runs, so the switch itself is what is checked: off, MCPUCLK must be
-// SCLK1 edge for edge; on, a clean 24 MHz; and across any number of switches
+// SCLK1 or held low; on, 24 MHz or held low; and across any number of switches
 // no high phase may be cut short. SCLK1 is high 3 CLKSYS cycles and the fast
 // leg 1, so every high phase is 1 or 3 -- a 2 is a truncated SCLK1 pulse.
+// "Held low" is the DRAM-refresh stall, which may only lengthen a low phase,
+// and must average exactly 10.5 of every 104 leg periods (2.0 -> 1.798 MHz).
 `timescale 1ns/1ns
 module clkturbo_tb;
 
@@ -44,7 +46,7 @@ always @(posedge clk) begin
     if (last && !(run == 1 || run == 3)) begin
       high_bad++; if (high_bad < 5) $display("high phase of %0d at %0t", run, $time);
     end
-    if (!last && !(run >= 1 && run <= 3)) begin
+    if (!last && run < 1) begin
       low_bad++; if (low_bad < 5) $display("low phase of %0d at %0t", run, $time);
     end
     if (last) highs++;
@@ -55,25 +57,36 @@ always @(posedge clk) begin
 end
 
 integer i, mism, toggles, lat;
+reg prev_m = 0;
 initial begin
   repeat (20) @(posedge clk);
 
-  // --- off: MCPUCLK is SCLK1 itself ---
-  mism = 0;
-  for (i = 0; i < 600; i++) begin @(posedge clk); #2; if (MCPUCLK !== SCLK1) mism++; end
-  check("turbo off: MCPUCLK == SCLK1 every cycle", mism == 0);
+  // --- off: MCPUCLK is SCLK1 or held low, and runs at 93.5/104 of it ---
+  mism = 0; toggles = 0;
+  for (i = 0; i < 62400; i++) begin
+    @(posedge clk); #2;
+    if (MCPUCLK && !SCLK1) mism++;
+    if (MCPUCLK && !prev_m) toggles++;
+    prev_m = MCPUCLK;
+  end
+  check("turbo off: MCPUCLK is never high while SCLK1 is low", mism == 0);
+  $display("turbo off: %0d periods in 62400 CLKSYS (10400 SCLK1; 9350 = 1.798 MHz)", toggles);
+  check("turbo off: refresh averages 93.5/104 of SCLK1", toggles >= 9339 && toggles <= 9361);
 
   // --- on: enters within one SCLK1 period, then toggles every cycle ---
   @(posedge clk); turbo <= 1; lat = 0;
-  while (!turbo_on && lat < 20) begin @(posedge clk); lat++; end
-  check("turbo on within one SCLK1 period", turbo_on && lat <= 6);
+  while (!turbo_on && lat < 100) begin @(posedge clk); lat++; end
+  // A refresh stall in progress delays it by up to 11 SCLK1 periods.
+  check("turbo on within one stall and one SCLK1 period", turbo_on && lat <= 78);
   repeat (2) @(posedge clk);
   toggles = 0;
-  for (i = 0; i < 100; i++) begin
-    @(posedge clk); #2; last_on = MCPUCLK; @(posedge clk); #2;
-    if (MCPUCLK != last_on) toggles++;
+  for (i = 0; i < 62400; i++) begin
+    @(posedge clk); #2;
+    if (MCPUCLK && !prev_m) toggles++;
+    prev_m = MCPUCLK;
   end
-  check("turbo on: 24 MHz, a toggle every CLKSYS cycle", toggles == 100);
+  $display("turbo on: %0d periods in 62400 CLKSYS (31200 at 24 MHz; 28050 = 93.5/104)", toggles);
+  check("turbo on: refresh averages 93.5/104 of 24 MHz", toggles >= 28039 && toggles <= 28061);
 
   // --- off again: back on SCLK1 within one period ---
   @(posedge clk); turbo <= 0; lat = 0;
@@ -81,8 +94,8 @@ initial begin
   check("turbo off within one SCLK1 period", !turbo_on && lat <= 7);
   repeat (8) @(posedge clk);
   mism = 0;
-  for (i = 0; i < 600; i++) begin @(posedge clk); #2; if (MCPUCLK !== SCLK1) mism++; end
-  check("after turbo: MCPUCLK == SCLK1 again", mism == 0);
+  for (i = 0; i < 6000; i++) begin @(posedge clk); #2; if (MCPUCLK && !SCLK1) mism++; end
+  check("after turbo: MCPUCLK follows SCLK1 again", mism == 0);
 
   // --- the FM77AV's MMR leg (48/7 MHz) has no 3x: turbo is refused ---
   machine_av <= 1; mmr_enabled <= 1; turbo <= 1;
@@ -103,7 +116,7 @@ initial begin
   $display("random: %0d switches", switches);
   check("random: many switches exercised", switches > 500);
   check("random: every high phase is 1 or 3 cycles", high_bad == 0);
-  check("random: every low phase is 1..3 cycles", low_bad == 0);
+  check("random: no low phase lost", low_bad == 0);
 
   $display("clkturbo: %0d checks, %0d failures", checks, fails);
   if (fails) $fatal(1, "clkturbo_tb FAILED");

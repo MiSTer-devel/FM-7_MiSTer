@@ -53,8 +53,8 @@ always @(posedge clk_tick) dbg_tick_count <= dbg_tick_count + 32'd1;
 // is latched from the ioctl download by the top level.
 assign eot = (image_size != 25'd0) && (addr >= image_size);
 
-// 2*(64+1)/48 MHz = 2.708 us, a third of DIV_T77's 8.083 us to 0.5%.
-wire [15:0] div_tick = fast ? 16'd64 : DIV_T77;
+// 2*(71+1)/48 MHz = 3.000 us, exactly a third of DIV_T77's 9.000 us.
+wire [15:0] div_tick = fast ? 16'd71 : DIV_T77;
 always @(posedge CLKSYS) begin
   if (counter >= div_tick) begin
     counter <= 16'd0;

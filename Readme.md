@@ -238,8 +238,8 @@ You can build your own ROM sets for other variants; the file format is in
   for about twenty seconds, then a `START / CONTINUE / JOYSTICK NORMAL` menu
   that answers a **pad button** — no key on the keyboard starts it. If a title
   looks stuck on a menu, try the pad before reporting it
-* One tape, **Killer Station**, stops at `Found: KILLER`. Its loader expects the
-  slightly faster CPU of earlier builds of this core; the 77AVEMU emulator stops at the same place
+* One tape, **Killer Station**, stops at `Found: KILLER`. The 77AVEMU emulator
+  stops at the same place
 * **3x tape loading has been tried on BASIC `run""` tapes only.** A tape with
   its own loader may time its bits in a way 3x upsets; if a tape fails, set
   **Tape speed** to **Normal** and try again, and please report it
