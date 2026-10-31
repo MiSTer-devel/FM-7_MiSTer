@@ -92,12 +92,17 @@ module sound_tb;
 
   // A CPU write: the decode strobe is low for the bus cycle, which at 1.2288 MHz
   // E against 48 MHz CLKSYS is about 40 clocks.
+  // Strobe width in CLKSYS cycles. A write strobe is 6 cycles with the main
+  // CPU at 8 MHz and 2 at the 24 MHz tape turbo (DERIVED_CLOCKS.md); the bus
+  // is released when it ends, which mdata going to $00 models.
+  integer stb_w = 40;
+
   task cpu_write(input sel_d, input [7:0] value);
     begin
       @(negedge clk); mdata = value;
       if (sel_d) wfd0dn = 1'b0; else wfd0en = 1'b0;
-      repeat (40) @(negedge clk);
-      wfd0dn = 1'b1; wfd0en = 1'b1;
+      repeat (stb_w) @(negedge clk);
+      wfd0dn = 1'b1; wfd0en = 1'b1; mdata = 8'h00;
       repeat (40) @(negedge clk);
     end
   endtask
@@ -107,8 +112,8 @@ module sound_tb;
     begin
       @(negedge clk); mdata = value;
       if (sel_c) wfd15n = 1'b0; else wfd16n = 1'b0;
-      repeat (40) @(negedge clk);
-      wfd15n = 1'b1; wfd16n = 1'b1;
+      repeat (stb_w) @(negedge clk);
+      wfd15n = 1'b1; wfd16n = 1'b1; mdata = 8'h00;
       repeat (40) @(negedge clk);
     end
   endtask
@@ -148,6 +153,14 @@ module sound_tb;
       cpu_write(1'b0, value);
       cpu_write(1'b1, 8'h02);
       cpu_write(1'b1, 8'h00);
+      // The YM2203 is busy for 32 of its own cycles after a data write
+      // (jt12_mmr.v busy_cnt), and a write landing inside that is lost.
+      // Software waits on status b7; the bench waits out the worst case
+      // (FM prescaler 1/6, cen every 40 clocks: 32*6*40 = 7680) with margin.
+      // Without it which of the balance check's TL=$7f writes survived
+      // depended on the cen phase, and the "one carrier" measured one
+      // operator or two.
+      repeat (10000) @(posedge clk);
     end
   endtask
 
@@ -216,8 +229,8 @@ module sound_tb;
     // ---- pitch -------------------------------------------------------------
     // Measure the divider the tone counter actually uses, independent of any
     // absolute clock: with one channel on, the mix is a square wave whose full
-    // period is 2 * TP * divider PSG-enable ticks, and the enable here is one
-    // tick per 40 clocks (CORE_CLK_1_2 = 39).
+    // period is 2 * TP * divider PSG-enable ticks, and the FM-7's enable is
+    // 32 ticks per 625 clocks (SOUND.v ym_acc).
     //
     // A real AY-3-8910 is clock/(16*TP). The FM-7 clocks it at 1.2288 MHz, so
     // TP = $0140 (320) should sound at 1.2288e6/(16*320) = 240 Hz. If the
@@ -246,9 +259,9 @@ module sound_tb;
         $display("FAIL PITCH: only %0d edges seen -- no tone", edges);
         fails = fails + 1;
       end
-      else if (((t1 - t0) / 4) / (2 * 320 * 20) != 16) begin
+      else if ((((t1 - t0) / 4) * 32 + 2 * 320 * 625 / 2) / (2 * 320 * 625) != 16) begin
         $display("FAIL PITCH: divider %0d, want 16 (8 = octave sharp, 32 = octave flat)",
-                 ((t1 - t0) / 4) / (2 * 320 * 20));
+                 (((t1 - t0) / 4) * 32 + 2 * 320 * 625 / 2) / (2 * 320 * 625));
         fails = fails + 1;
       end
       else begin
@@ -262,7 +275,7 @@ module sound_tb;
         // and MAME fm7.cpp:1893 both give that clock.
         $display("PITCH  measured %0d.%02d Hz at 48 MHz CLKSYS, AY-3-8910 wants 240.00 Hz",
                  48000000 / ((t1 - t0) / 4),
-                 (48000000 * 100 / ((t1 - t0) / 4)) % 100);
+                 (64'd4800000000 / ((t1 - t0) / 4)) % 100);   // 4.8e9 overflows 32 bits
       end
     end
 
@@ -294,6 +307,20 @@ module sound_tb;
       fails = fails + 1;
     end
     else $display("PASS joystick 1 right = %02x", dout);
+
+    // The same selection with the 2-cycle strobes of the 24 MHz tape turbo.
+    // A sampler that waits for the third low cycle reads the released bus.
+    stb_w = 2;
+    psg_write(4'd15, 8'h20);
+    cpu_write(1'b0, 8'd14);
+    cpu_write(1'b1, 8'h03);
+    stb_w = 40;
+    #1;
+    if (dout !== 8'hee) begin
+      $display("FAIL joystick 0 with 2-cycle strobes: got %02x wanted ee", dout);
+      fails = fails + 1;
+    end
+    else $display("PASS joystick 0 with 2-cycle strobes = %02x", dout);
 
     psg_write(4'd15, 8'h00);           // nothing selected -> $ff, as CSP returns
     cpu_write(1'b0, 8'd14);

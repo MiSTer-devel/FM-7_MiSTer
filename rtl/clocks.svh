@@ -10,7 +10,6 @@ localparam CORE_CLK_4_9  = 9;   // 48/4.8-1
 // FM77AV main CPU with MMR enabled: 2 MHz drops to 1.6 MHz (FM-Techknow p.334).
 // 6.4 MHz is not an integer divide of 48; 48/7 = 6.857 MHz gives E = 1.714 MHz.
 localparam CORE_CLK_6_8  = 6;
-localparam CORE_CLK_1_2  = 39;  // 48/1.2-1;
 // One T77 duration unit. In machine time it is 9.000 us (77AVEMU
 // NANOSEC_PER_T77_ONE = 9000, fm77avtape.h:32), but what a tape load depends
 // on is the RATIO of main-CPU E cycles to T77 units: F-BASIC decides each bit

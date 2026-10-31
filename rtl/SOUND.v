@@ -89,14 +89,18 @@ wire reset = ~RESETBn;
 // doubled clock. Both machines end up with the SSG at 1.2288 MHz, which is the
 // only arrangement in which FM-7 software plays at the same pitch on both.
 //
-// Residual, unchanged: 48/40 = 1.2 MHz and 48/20 = 2.4 MHz against a true
-// 1.2288/2.4576, so both sit 2.3% flat -- about 0.4 semitone. Fixing that needs
-// a fractional divider and is a separate job.
-localparam CORE_CLK_2_4 = 19;   // 48/2.4 - 1
-wire EN_CLK_1_2, EN_CLK_2_4;
-clk_en #(CORE_CLK_1_2) u_ck_en   (.ref_clk(CLKSYS), .cen(EN_CLK_1_2));
-clk_en #(CORE_CLK_2_4) u_ck_en_2 (.ref_clk(CLKSYS), .cen(EN_CLK_2_4));
-wire YM_CEN = machine_av ? EN_CLK_1_2 : EN_CLK_2_4;
+// The rate is exact on average: 48 / 2.4576 = 625/32, so a phase accumulator
+// fires 32 enables every 625 CLKSYS cycles (16 for the AV's 1.2288), each 19
+// or 20 cycles apart. (superseded: integer dividers 48/20 = 2.4 and
+// 48/40 = 1.2 MHz, which left both machines 2.3% -- 0.4 semitone -- flat.)
+reg  [9:0] ym_acc = 10'd0;
+reg        YM_CEN = 1'b0;
+wire [9:0] ym_step = machine_av ? 10'd16 : 10'd32;
+wire [10:0] ym_sum = {1'b0, ym_acc} + {1'b0, ym_step};
+always @(posedge CLKSYS) begin
+  YM_CEN <= (ym_sum >= 11'd625);
+  ym_acc <= (ym_sum >= 11'd625) ? ym_sum[9:0] - 10'd625 : ym_sum[9:0];
+end
 
 //----------------------------------------------------------------------------
 // The two register windows
