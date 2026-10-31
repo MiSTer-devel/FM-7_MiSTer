@@ -86,6 +86,10 @@ make avmem-test        # AV memory paths        make crtram-test    # CRT RAM
 make smem-test         # AV character generator make pal-test       # analog palette
 make avpixel-test      # 12-plane pixel combine make avhdraw-test   # drawing ALU
 make mb60h010-test     # AV raster address      make sound-test     # PSG / YM2203
+make tapebar-test      # tape status bar: total from the download, elapsed,
+                       # fill, rewind, picture measuring and when it draws
+make clkturbo-test     # tape turbo's main-CPU clock switch: SCLK1 edge for
+                       # edge when off, 24 MHz when on, no cut-short phase
 make distest           # the 6809 disassembler, no Verilator at all
 ```
 
@@ -120,6 +124,7 @@ shows everything a change broke.
 | `--disk-index <0-7>` / `--disk1-index <0-7>` | Which sub-disk of a multi-disk container that drive presents -- the `Disk 1 image` / `Disk 2 image` OSD rows. |
 | `--romset <file>` / `--romset-sel <0\|1>` | Load a `boot1.rom` system-ROM set and pick set 0 (Japanese) or 1 (Spanish), matching the `System ROM` OSD row. |
 | `--tape-audio` / `--rewind-at-frame <n>` | The `Tape Audio` and `Tape Rewind` OSD bits. |
+| `--tape-speed <3x\|normal>` | The `Tape speed` OSD bit. Defaults to `3x`, as the OSD does, so a tape load reaches a given point in about a third of the frames it takes at `normal`. |
 | `--bootrom <0-3>` | The `BootROM` OSD bits: 0 = F-BASIC, 1-3 = the DOS boot ROMs. |
 | `--machine <fm7\|fm77av>` | Machine-family selector matching the OSD. (Superseded claim: *"`fm77av` is a bring-up gate and currently holds the core in reset until the AV backend is implemented"*. It selects the real AV family now -- memory map, video, sub-I/O and the YM2203 -- and AV disks boot under it. An AV title run without it reports a uniform "nothing boots", which reads as a core failure rather than as the wrong switch.) |
 | `--key <frame>:<text>` | Types text, or `@NAME` for `SPACE RETURN TAB BS ESC CAPS UP DOWN LEFT RIGHT HOME INS DEL CTRL SHIFT GRAPH KANA BREAK F1`..`F10`, and the keypad `KP0`..`KP9 KPDOT KPPLUS KPMINUS KPSTAR KPSLASH KPENTER`. `@KP8` is not `@UP`: the same scancode, without the E0 prefix. |

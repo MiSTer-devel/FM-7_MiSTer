@@ -104,10 +104,17 @@ of reach for now.
 2. Type `run""` and press Enter.
 3. Wait: `Searching`, then `Found: NAME`, then the program starts.
 
-Tapes load at the speed cassettes really ran — a couple of minutes for a small
-title, closer to six for a big one. **Tape Audio** lets you hear it working,
-and **Tape Rewind** puts you back at the start, which you need before loading
-anything a second time.
+Tapes load three times faster than a real cassette: while the tape plays, the
+main CPU and the tape both run at 3x, and the moment the motor stops the
+machine is back at normal speed. **Tape speed** set to **Normal** loads at the
+speed cassettes really ran — a couple of minutes for a small title, closer to
+six for a big one. An FM77AV running with its MMR on always loads at normal
+speed: its CPU clock there has no clean 3x. While the tape plays, a status bar
+in the bottom-left corner shows the time played, the tape's length and a
+progress bar, with `x3` while turbo is on; it disappears when the motor stops,
+and **Tape overlay** turns it off.
+**Tape Audio** lets you hear it working, and **Tape Rewind** puts you back at
+the start, which you need before loading anything a second time.
 
 Some tapes hold a machine-code program rather than a BASIC one; those want
 
@@ -129,6 +136,8 @@ Alexandria's, for instance, end in `-loadm`.
 | **Disk 1 / 2 image** | pick which disk inside a multi-disk container file |
 | **Tape Rewind** | rewind the cassette to the start |
 | **Tape Audio** | hear the tape while it loads |
+| **Tape speed** | 3x (default) or Normal; takes effect the next time the motor starts |
+| **Tape overlay** | the time and progress bar shown while the tape plays |
 | **Boot ROM** | `0 disk` boots floppies, `2 dos-a` boots OS-9 |
 | **Machine** | FM-7, or FM77AV |
 | **System ROM** | Japanese or Spanish system ROMs — see below |
@@ -229,9 +238,12 @@ You can build your own ROM sets for other variants; the file format is in
   for about twenty seconds, then a `START / CONTINUE / JOYSTICK NORMAL` menu
   that answers a **pad button** — no key on the keyboard starts it. If a title
   looks stuck on a menu, try the pad before reporting it
-* One tape, **Crash Ball**, reports `Device I/O Error` after finding its header
+* One tape, **Killer Station**, stops at `Found: KILLER`. Its loader expects the
+  slightly faster CPU of earlier builds of this core; the 77AVEMU emulator stops at the same place
+* **3x tape loading has been tried on BASIC `run""` tapes only.** A tape with
+  its own loader may time its bits in a way 3x upsets; if a tape fails, set
+  **Tape speed** to **Normal** and try again, and please report it
 * **Xanadu Scenario II disk D** does not load
-* PSG pitch is about **0.4 of a semitone flat**, from an integer clock divider
 * **The FM/PSG balance has been listened to, not measured.** The FM77AV's FM
   half used to sit about 18 dB under the PSG, so a tune came out as drums over
   a barely audible melody. It now follows the balance jt12 itself intends, and

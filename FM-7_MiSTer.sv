@@ -75,9 +75,11 @@ assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
 //   18:13     Disk 1 / Disk 2 sub-image  disk_index[0] / disk_index[1]
 //   19        System ROM set             romset_sel -> ROMLOAD
 //   20        Joypad keys                joykey_en -> JOYKEYS
+//   21        Tape overlay               TAPEBAR enable
+//   22        Tape speed                 tape_turbo -> CLKCTRL, t77_decode
 //   122:121   Aspect ratio               VIDEO_ARX / VIDEO_ARY
 //
-// Bits 1..7 and 21..120 are free. The hole at 1..7 is where the template's
+// Bits 1..7 and 23..120 are free. The hole at 1..7 is where the template's
 // "TV Mode" (O[2]) and "Noise" (O[4:3]) demo options used to sit; they drove
 // nothing in this core and are gone. The hole is left as-is deliberately --
 // renumbering would only invalidate saved .cfg files for no gain.
@@ -95,6 +97,12 @@ localparam CONF_STR = {
   "O[18:16],Disk 2 image,1,2,3,4,5,6,7,8;",
   "T[8],Tape Rewind;",
   "O[9],Tape Audio,Off,On;",
+  // 3x: the main CPU and the tape both run 3x while the deck plays, and only
+  // then. Read when the deck starts, so it never changes speed mid-load.
+  "O[22],Tape speed,3x,Normal;",
+  // The status bar in the bottom-left corner while the tape plays; it is
+  // drawn over the picture, never into the machine. See rtl/TAPEBAR.sv.
+  "O[21],Tape overlay,On,Off;",
   "O[11:10],Boot ROM,0 disk,1 alt,2 dos-a,3 empty;",
   "O[12],Machine,FM-7,FM77AV;",
   // Which system ROM set to page in from the uploaded boot1.rom. Does nothing
@@ -298,9 +306,7 @@ always @(posedge clk_sys)
 wire [2:0] grb;
 wire [23:0] rgb;
 
-assign VGA_R = machine_av ? rgb[23:16] : {8{grb[1]}};
-assign VGA_G = machine_av ? rgb[15:8]  : {8{grb[2]}};
-assign VGA_B = machine_av ? rgb[7:0]   : {8{grb[0]}};
+wire [23:0] machine_rgb = machine_av ? rgb : {{8{grb[1]}}, {8{grb[2]}}, {8{grb[0]}}};
 
 wire HBlank;
 wire HSync;
@@ -332,6 +338,15 @@ wire [15:0] sdram_data;
 wire [24:0] sdram_addr;
 wire need_more_byte;
 wire sdram_ready;
+wire tape_playing;
+wire [31:0] tape_position;
+wire turbo_on;
+
+// Tape speed is taken when the deck is idle and held while it plays, so a
+// change in the OSD lands at the next deck start, not in the middle of a load.
+reg tape_3x = 1'b1;
+always @(posedge clk_sys) if (~tape_playing) tape_3x <= ~status[22];
+wire tape_turbo = tape_playing & tape_3x;
 
 // Hold the HPS off while the SDRAM controller is busy, so every byte of the
 // t77 actually lands. Same expression vsim/sim.v uses.
@@ -415,6 +430,8 @@ core u_core(
   // tape
   .cin         ( cin           ),
   .motor       ( motor         ),
+  .tape_turbo  ( tape_turbo    ),
+  .turbo_on    ( turbo_on      ),
   .bootrom_sel ( status[11:10] ),
   .machine_av  ( machine_av    ),
   // floppy
@@ -442,8 +459,33 @@ t77_decode u_t77_decode(
   .sdram_rd   ( need_more_byte ),
   .sout       ( cin            ),
   .rewind     ( rewind         ),
+  .fast       ( turbo_on       ),
   .image_size ( tape_size      ),
-  .eot        (                )
+  .eot        (                ),
+  .playing    ( tape_playing   ),
+  .position   ( tape_position  )
+);
+
+// The tape status bar, mixed in after the machine and before the scaler.
+// CE_PIXEL, not ce_pix: the raw enable is high two cycles in three and would
+// measure the picture as 960 wide (see CE_PIXEL below).
+TAPEBAR u_tapebar(
+  .clk_sys    ( clk_sys                     ),
+  .dl         ( tape_download               ),
+  .dl_wr      ( ioctl_wr                    ),
+  .dl_addr    ( ioctl_addr[24:0]            ),
+  .dl_data    ( ioctl_dout                  ),
+  .loaded     ( (tape_size != 25'd0) & ~tape_download ),
+  .playing    ( tape_playing                ),
+  .fast       ( turbo_on                    ),
+  .position   ( tape_position               ),
+  .clk_video  ( CLK_VIDEO                   ),
+  .ce_pix     ( CE_PIXEL                    ),
+  .hblank     ( HBlank                      ),
+  .vblank     ( VBlank                      ),
+  .enable     ( ~status[21]                 ),
+  .rgb_in     ( machine_rgb                 ),
+  .rgb_out    ( {VGA_R, VGA_G, VGA_B}       )
 );
 
 

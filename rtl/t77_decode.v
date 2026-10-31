@@ -5,14 +5,22 @@ module t77_decode(
   input [15:0] data,
   input data_stb,
   input rewind,
+  // The main CPU is on its 3x tape-turbo leg (CLKCTRL turbo_on): play the
+  // tape 3x as well, so the loader's loops see the same pulse widths.
+  input fast,
   input [24:0] image_size,   // bytes loaded over ioctl; 0 = unknown
   output eot,                // end of tape reached
   output reg [24:0] sdram_addr,
   output reg sdram_rd,
-  output sout
+  output sout,
+  // For the tape status bar (TAPEBAR.sv): whether entries are being played,
+  // and how many T77 units (clocks.svh DIV_T77) have played since the last rewind -- the same
+  // unit as the duration bytes the bar sums for the total.
+  output playing,
+  output reg [31:0] position = 32'd0
 );
 
-reg clk_9us = 0;
+reg clk_tick = 0;
 reg pstart;
 reg [15:0] counter = 0;
 reg s;
@@ -36,8 +44,8 @@ wire [14:0] decoded_len = { 7'd0, data[15:8] };
 `ifdef DEBUG_TAPE
 reg [24:0] dbg_entries   = 0;   // entries latched
 reg [31:0] dbg_ticks     = 0;   // sum of the `len` values we loaded
-reg [31:0] dbg_tick_count = 0;  // clk_9us periods actually elapsed
-always @(posedge clk_9us) dbg_tick_count <= dbg_tick_count + 32'd1;
+reg [31:0] dbg_tick_count = 0;  // clk_tick periods actually elapsed
+always @(posedge clk_tick) dbg_tick_count <= dbg_tick_count + 32'd1;
 `endif
 
 // Without this the address counter ran forever: a 238 KB image played out
@@ -45,10 +53,12 @@ always @(posedge clk_9us) dbg_tick_count <= dbg_tick_count + 32'd1;
 // is latched from the ioctl download by the top level.
 assign eot = (image_size != 25'd0) && (addr >= image_size);
 
+// 2*(64+1)/48 MHz = 2.708 us, a third of DIV_T77's 8.083 us to 0.5%.
+wire [15:0] div_tick = fast ? 16'd64 : DIV_T77;
 always @(posedge CLKSYS) begin
-  if (counter >= DIV_9us) begin
+  if (counter >= div_tick) begin
     counter <= 16'd0;
-    clk_9us <= ~clk_9us;
+    clk_tick <= ~clk_tick;
   end
   else begin
     counter <= counter + 16'd1;
@@ -71,7 +81,16 @@ always @(posedge CLKSYS) begin
   end
 end
 
-always @(posedge clk_9us, posedge rewind) begin
+// The decoder below acts on every rising edge of clk_tick while sending and not
+// at the end; this is that edge, one CLKSYS cycle early, counted in CLKSYS.
+assign playing = sending & ~eot;
+wire tick_t77 = (counter >= div_tick) && !clk_tick;
+always @(posedge CLKSYS) begin
+  if (rewind) position <= 32'd0;
+  else if (tick_t77 && playing) position <= position + 32'd1;
+end
+
+always @(posedge clk_tick, posedge rewind) begin
   if (rewind) begin
     addr <= 25'd18;
     sdram_addr <= 25'd18;

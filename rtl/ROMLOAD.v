@@ -6,7 +6,7 @@
 // the FM-7's main ROM (m151) is 32768 deep and therefore costs 32 M10K blocks
 // on its own. A second copy for a second machine variant would cost another
 // 32, plus 2 for the character generator -- 34 of the 37 free blocks recorded
-// in TODO.md's FPGA fit section. Staging the sets in SDRAM instead and paging
+// in TODO.md (FPGA budget). Staging the sets in SDRAM instead and paging
 // the selected one down into the existing block RAMs costs ZERO blocks, and
 // SDRAM has ~30 MB free above the kanji ROM.
 //

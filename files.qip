@@ -43,6 +43,7 @@ set_global_assignment -name VERILOG_FILE rtl/SOUND.v
 set_global_assignment -name VERILOG_FILE rtl/SRAM.v
 set_global_assignment -name VERILOG_FILE rtl/SUBCRTADDR.v
 set_global_assignment -name VERILOG_FILE rtl/t77_decode.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/TAPEBAR.sv
 set_global_assignment -name VERILOG_FILE rtl/TIMER.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/wd1793.sv
 set_global_assignment -name VERILOG_FILE rtl/wd1793_dpram.v

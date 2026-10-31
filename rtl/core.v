@@ -21,6 +21,10 @@ module core(
   input        joykey_en,
   input cin,
   output motor,
+  // Tape turbo request (the deck plays, OSD Tape speed = 3x) and whether the
+  // main CPU is actually on the 3x leg -- the tape's timebase follows that.
+  input tape_turbo,
+  output turbo_on,
   output SVIDEOCLK,
   output [ 9:0] psg_snd,        // jt03 SSG mix, 0..765, 0 = silence
   output signed [15:0] fm_snd,  // jt03 FM mix, signed, 0 = silence
@@ -529,6 +533,8 @@ CLKCTRL u_CLKCTRL(
   .IRQCLRn      ( IRQCLRn      ),
   .EXTIRQ       ( EXTIRQ       ),
   .FMIRQn       ( AV_FM_IRQn_gated ),
+  .turbo        ( tape_turbo   ),
+  .turbo_on     ( turbo_on     ),
   .MCPUCLK      ( MCPUCLK      ),
   .SCPUCLK      ( SCPUCLK      ),
   .MDATABUS_out ( CLKCTRL_out  ),

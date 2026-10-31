@@ -29,6 +29,10 @@ module CLKCTRL(
   // it off and does not expect to. Tied high in FM-7 mode, where there is no
   // YM2203 at all.
   input FMIRQn,
+  // Tape turbo: the deck is playing and the OSD asks for 3x. Only the main CPU
+  // speeds up -- it runs the cassette routine; the sub only draws.
+  input turbo,
+  output reg turbo_on = 1'b0,  // the main CPU is on the 24 MHz leg right now
   output MCPUCLK, // 8 | 4.9
   output SCPUCLK, // 8 | 4
   output reg [7:0] MDATABUS_out,
@@ -108,7 +112,41 @@ always @(posedge CLKSYS)
 // 48 MHz; CLK6_8 is 48/7 = 6.857 MHz, E = 1.714 MHz. Titles toggle this at
 // runtime -- the FM77AV demo disk disables MMR for its closing palette section
 // precisely to go faster (FM-Techknow p.318) -- so it cannot be a static rate.
-assign MCPUCLK = switch ? ((machine_av & mmr_enabled) ? CLK6_8 : SCLK1) : CLK4_9;
+//
+// Tape turbo puts the 8 MHz leg on 24 MHz (CLKSYS/2), so E = 6 MHz, 3x. The
+// tape's tick goes 3x as well off turbo_on at the same moment (t77_decode),
+// so the BIOS's pulse-width loops count the same and decode the same bytes.
+// Not on the other legs: 3 x 48/7 MHz and 3 x 4.9 MHz are not divides of 48.
+//
+// The leg changes only while SCLK1 is low with at least one more low cycle to
+// go (low now, high two cycles ago: cnt 3 or 4 of clk_en's 0..5), and leaves
+// the fast clock only at the end of one of its high cycles. Every high and low
+// phase on MCPUCLK is therefore at least one whole CLKSYS cycle -- no runt.
+// With turbo off sel stays 0 and MCPUCLK is SCLK1 itself, edge for edge.
+wire turbo_ok = turbo & switch & ~(machine_av & mmr_enabled);
+reg sclk1_d, sclk1_dd;
+reg fast_clk = 1'b0;
+wire sclk1_low_more = ~SCLK1 & sclk1_dd;
+always @(posedge CLKSYS) begin
+  sclk1_d  <= SCLK1;
+  sclk1_dd <= sclk1_d;
+  if (~turbo_on) begin
+    fast_clk <= 1'b0;
+    if (turbo_ok & sclk1_low_more) begin
+      turbo_on <= 1'b1;
+      fast_clk <= 1'b1;
+    end
+  end
+  else if (fast_clk & ~turbo_ok & sclk1_low_more) begin
+    turbo_on <= 1'b0;
+    fast_clk <= 1'b0;
+  end
+  else
+    fast_clk <= ~fast_clk;
+end
+wire SCLK1_main = turbo_on ? fast_clk : SCLK1;
+
+assign MCPUCLK = switch ? ((machine_av & mmr_enabled) ? CLK6_8 : SCLK1_main) : CLK4_9;
 
 // SUPERSEDED CLAIM: "the FM-7/FM-8 switch changes the MAIN CPU's clock only,
 // the sub runs at the same rate either way" -- disproven by the Fujitsu FM-7
@@ -118,12 +156,11 @@ assign MCPUCLK = switch ? ((machine_av & mmr_enabled) ? CLK6_8 : SCLK1) : CLK4_9
 // DIP switch, read back on $FD00 b0, which page 22's I/O map labels 0:1.2M /
 // 1:2M. See docs/FM77AV.md.
 //
-// So this core currently sits in a combination no real FM-7 can be in: main on
-// the FM-8 leg at 4.8 MHz, sub on the FM-7 leg at 8 MHz. That is why raising
-// only the main clock breaks the FM77AV demo -- it moves the main:sub ratio,
-// and the paragraph below is the evidence that the ratio is load-bearing.
-// Per the manual the fix is to move BOTH to 8 MHz, plus the AV's MMR-conditional
-// drop to ~1.6 MHz (FM-Techknow p.334). Untried; see TODO.md.
+// Both are now on SCLK1 in FM-7 mode, and the AV's MMR-on leg is CLK6_8
+// (FM-Techknow p.334's ~20% drop). (superseded: "main on the FM-8 leg at
+// 4.8 MHz, sub at 8 MHz -- untried" -- the mux legs were the wrong way round,
+// and raising only the main clock broke the FM77AV demo because it moved the
+// main:sub ratio, which the paragraph below shows is load-bearing.)
 //
 // This used to hand the sub SCLK2 in FM-7 mode, which is 4 MHz -- E = 1 MHz,
 // half speed. SCLK2 is not the sub's clock at all; MB60H010.v labels it "clock
