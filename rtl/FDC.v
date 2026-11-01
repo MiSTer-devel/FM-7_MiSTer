@@ -581,8 +581,8 @@ wd1793 #(.RWMODE(1), .EDSK(1)) u_wd1793_0
   .side         ( fdc_side          ),
   .ready        ( ready0            ),
 
-  // SD block interface (RWMODE 1). img_size is 20 bits in the core: 1 MB max,
-  // which covers 2D (320-360 KB) and 2DD .d77 images comfortably.
+  // SD block interface (RWMODE 1). img_size (20 bits) sizes the raw fixed-
+  // geometry images; a .d77 is addressed through img_size_id, 24 bits.
   .img_mounted  ( img_mounted[0]    ),
   .img_size     ( img_size[19:0]    ),
   .img_size_id  ( img_size[23:0]    ),

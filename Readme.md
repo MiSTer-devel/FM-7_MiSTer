@@ -93,10 +93,8 @@ disk does — so do *not* reset afterwards, or you will restart the game.
 independent. On an ordinary single-disk file the selector does nothing: only
 `1` is there.
 
-One limit worth knowing before you go hunting for a fault: only the disks lying
-in the **first 1 MB** of the file can be reached. Past that the selector clamps
-to the last one it can get to, so the later disks of a large container are out
-of reach for now.
+The selector reaches the first eight disks of a container. Asking for one past
+the end leaves you on the last disk that exists.
 
 ### A tape
 
@@ -224,8 +222,6 @@ You can build your own ROM sets for other variants; the file format is in
 ## Known limitations
 
 * **2DD floppies are not supported** — 2D only
-* Multi-disk containers can only reach disks in the **first 1 MB** of the file;
-  beyond that the selector clamps to the last reachable disk
 * **The FM77AV side is younger than the FM-7 side.** 68 AV titles have been
   swept against a reference emulator — 30 match it and the rest are blank on the
   reference too — against 395 disks checked on the FM-7 side. That sweep samples
