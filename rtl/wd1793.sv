@@ -219,6 +219,14 @@ localparam A_TRACK           = 1;
 localparam A_SECTOR          = 2;
 localparam A_DATA            = 3;
 
+// WRITE TRACK timing at the 1 MHz ce: 2D MFM is 250 kbit/s, 32 us a byte, and
+// a 300 rpm revolution is 6250 bytes.
+localparam [5:0]  WTRK_BYTE_CE = 6'd32;
+localparam [12:0] WTRK_BYTES   = 13'd6250;
+localparam        WTRK_REV_CE  = 200000;   // one revolution, 200 ms
+// Multi-sector read: SECTOR register update after the last byte, in ce (us).
+localparam        MULTI_SECTOR_CE = 30;
+
 // States
 typedef enum 
 {
@@ -243,6 +251,11 @@ typedef enum
 	STATE_WRITE,
 	STATE_WRITE_1,
 	STATE_WRITE_2,
+
+	STATE_WTRK,
+	STATE_WTRK_1,
+
+	STATE_MULTI,
 
 	STATE_ABORT,
 	STATE_WAIT,
@@ -425,6 +438,8 @@ always @(posedge clk_sys) begin
 	reg       rw_type;
 	integer   wait_time;
 	reg [3:0] read_timer;
+	reg [5:0] wtrk_timer;
+	reg [12:0] wtrk_left;
 	reg [9:0] seektimer;
 	reg [7:0] ra_sector;
 	reg       multisector;
@@ -738,8 +753,8 @@ always @(posedge clk_sys) begin
 						if(next_length == 0) begin
 							// either read the next sector, or stop if this is track end
 							if(multisector) begin
-								wdreg_sector <= wdreg_sector + 1'b1;
-								state <= STATE_SEARCH;
+								wait_time <= MULTI_SECTOR_CE;
+								state <= STATE_MULTI;
 							end else begin
 								state <= STATE_ENDCOMMAND;
 							end
@@ -813,6 +828,61 @@ always @(posedge clk_sys) begin
 							byte_addr <= byte_addr + 1'd1;
 							data_length <= next_length;
 							state <= STATE_WRITE;
+						end
+					end
+				end
+
+			// Multi-sector read: the SECTOR register moves on only after the last
+			// byte has been taken, 30 us later in CSP (EVENT_MULTI1,
+			// mb8877.cpp:533) and at the next sector's preparation in 77AVEMU
+			// (needIncrementSector, fm77avfdc.cpp:871). Albatross reads $FD1B,
+			// then compares the last sector it wants against $FD1A and stores
+			// the byte only if it has not been passed ($9650: LDA <$1B / CMPB
+			// <$1A / BCS done / STA ,Y+). Moving the register on the same tick
+			// raced that compare and lost the final byte of 4 of its first 16
+			// transfers in sim; the title screen drew stripes and a ghost ball.
+			STATE_MULTI:
+				begin
+					if(wait_time) wait_time <= wait_time - 1;
+					else begin
+						wdreg_sector <= wdreg_sector + 1'b1;
+						state <= STATE_SEARCH;
+					end
+				end
+
+			// WRITE TRACK: one DRQ per byte time for a whole revolution. The bytes
+			// are taken and dropped -- a .d77 cannot be re-laid-out from here, so
+			// a format leaves the track's sectors and data as they were.
+			STATE_WTRK:
+				begin
+					write_data <= 0;
+					s_drq_busy <= 2'b11;
+					wtrk_timer <= WTRK_BYTE_CE - 6'd2;   // + this cycle = 32
+					state      <= STATE_WTRK_1;
+				end
+			STATE_WTRK_1:
+				begin
+					if(write_data & s_drq) s_drq_busy <= 2'b01;
+					if(wtrk_left == WTRK_BYTES && s_drq & ~write_data) begin
+						// The first byte has until the index pulse: writing starts
+						// there, and only a byte still missing then is lost data
+						// that ends the command (WD1793 datasheet, Write Track).
+						if(wait_time) wait_time <= wait_time - 1;
+						else begin
+							s_lostdata <= 1;
+							state <= STATE_ENDCOMMAND;
+						end
+					end else begin
+						wtrk_timer <= wtrk_timer - 1'd1;
+						if(!wtrk_timer) begin
+							// A later byte the CPU did not supply is written as $00
+							// and sets LOST DATA; the command carries on to the index.
+							if(s_drq & ~write_data) begin
+								s_lostdata <= 1;
+								s_drq_busy <= 2'b01;
+							end
+							wtrk_left <= wtrk_left - 1'd1;
+							state <= (wtrk_left == 1) ? STATE_ENDCOMMAND : STATE_WTRK;
 						end
 					end
 				end
@@ -1076,10 +1146,24 @@ always @(posedge clk_sys) begin
 								end
 							'hF:  // WRITE TRACK
 								begin
+									// CSP cmd_writetrack (mb8877.cpp:1136): a write-
+									// protected disk ends at once with WRITE FAULT,
+									// otherwise DRQ runs from index to index. Woody
+									// Poco's formatter polls $FD18 bit 1 for DRQ with
+									// no INTRQ or BUSY exit, so without the DRQ stream
+									// it spins for ever.
 									s_wpe <= din[5];
 									{s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
 									s_drq_busy <= 2'b01;
-									state <= STATE_WAIT;
+									if(!ready) state <= STATE_WAIT;
+									else if(s_readonly) begin
+										s_wrfault <= 1;
+										state <= STATE_WAIT;
+									end else begin
+										wtrk_left <= WTRK_BYTES;
+										wait_time <= WTRK_REV_CE;
+										state <= STATE_WTRK;
+									end
 								end
 							'hE:	// READ TRACK
 								begin
