@@ -243,7 +243,6 @@ You can build your own ROM sets for other variants; the file format is in
 * **3x tape loading has been tried on BASIC `run""` tapes only.** A tape with
   its own loader may time its bits in a way 3x upsets; if a tape fails, set
   **Tape speed** to **Normal** and try again, and please report it
-* **Xanadu Scenario II disk D** does not load
 * **The FM/PSG balance has been listened to, not measured.** The FM77AV's FM
   half used to sit about 18 dB under the PSG, so a tune came out as drums over
   a barely audible melody. It now follows the balance jt12 itself intends, and

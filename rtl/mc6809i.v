@@ -220,6 +220,7 @@ localparam INTTYPE_FIRQ     = 3'H2 ;
 localparam INTTYPE_SWI      = 3'H3 ;
 localparam INTTYPE_SWI2     = 3'H4 ;
 localparam INTTYPE_SWI3     = 3'H5 ;
+localparam INTTYPE_XRES     = 3'H6 ;
 
 reg [2:0] IntType;
 reg [2:0] IntType_nxt;
@@ -1384,6 +1385,9 @@ begin
         4'b1101:
             addressing_mode_type   =  TYPE_INHERENT;
 
+        4'b1110:                    // undocumented $3E, XRES
+            addressing_mode_type   =  TYPE_INHERENT;
+
         4'b1111:
             addressing_mode_type   =  TYPE_INHERENT;
 
@@ -1432,6 +1436,11 @@ localparam OPCODE_INH_RTI           =  8'H3B;
 localparam OPCODE_INH_CWAI          =  8'H3C;
 localparam OPCODE_INH_MUL           =  8'H3D;
 localparam OPCODE_INH_SWI           =  8'H3F;
+// Undocumented $3E: SWI's push, then the RESET vector (Motorola/Hitachi
+// programming reference p.153; MAME m6809.lst XRES; 77AVEMU mc6809.cpp
+// INST_UNDEF_RESET). Xanadu Scenario II's boot sector INCs a byte into $3E
+// and relies on it to reboot with RAM intact.
+localparam OPCODE_INH_XRES          =  8'H3E;
 localparam OPCODE_INH_SEX           =  8'H1D;
 localparam OPCODE_INH_NOP           =  8'H12;
 localparam OPCODE_INH_SYNC          =  8'H13;
@@ -2006,7 +2015,7 @@ begin
                         CpuState_nxt = CPUSTATE_PUL_ACTION;
                         NextState_nxt = CPUSTATE_FETCH_I1;
                     end
-                    else if (Inst1 == OPCODE_INH_SWI)
+                    else if ((Inst1 == OPCODE_INH_SWI) || (Inst1 == OPCODE_INH_XRES))
                     begin
                         rAVMA = 1'b1;
                         CpuState_nxt = CPUSTATE_SWI_START;
@@ -3891,6 +3900,8 @@ begin
             IntType_nxt = INTTYPE_SWI3;
         else if (InstPage2)
             IntType_nxt = INTTYPE_SWI2;
+        else if (Inst1 == OPCODE_INH_XRES)
+            IntType_nxt = INTTYPE_XRES;
         else
             IntType_nxt = INTTYPE_SWI;
 
@@ -3943,6 +3954,10 @@ begin
             INTTYPE_SWI3:
             begin
                 addr_nxt = `SWI3_VECTOR;
+            end
+            INTTYPE_XRES:
+            begin
+                addr_nxt = `RESET_VECTOR;
             end
             default: // make the default an IRQ, even though it really should never happen
             begin
@@ -3998,6 +4013,13 @@ begin
             INTTYPE_SWI3:
             begin
                 addr_nxt = `SWI3_VECTOR+16'H1;
+                rLIC = 1'b1;
+            end
+            INTTYPE_XRES:   // masks as SWI does, following 77AVEMU; MAME leaves CC alone
+            begin
+                addr_nxt = `RESET_VECTOR+16'H1;
+                cc_nxt[CC_F_BIT] = 1'b1;
+                cc_nxt[CC_I_BIT] = 1'b1;
                 rLIC = 1'b1;
             end
             default:
