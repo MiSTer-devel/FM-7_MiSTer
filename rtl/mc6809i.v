@@ -1438,8 +1438,9 @@ localparam OPCODE_INH_MUL           =  8'H3D;
 localparam OPCODE_INH_SWI           =  8'H3F;
 // Undocumented $3E: SWI's push, then the RESET vector (Motorola/Hitachi
 // programming reference p.153; MAME m6809.lst XRES; 77AVEMU mc6809.cpp
-// INST_UNDEF_RESET). Xanadu Scenario II's boot sector INCs a byte into $3E
-// and relies on it to reboot with RAM intact.
+// INST_UNDEF_RESET). CSP instead resets the CPU without pushing
+// (mc6809_base.cpp rst). Xanadu Scenario II's boot sector INCs a byte into
+// $3E and relies on it to reboot with RAM intact; either form serves it.
 localparam OPCODE_INH_XRES          =  8'H3E;
 localparam OPCODE_INH_SEX           =  8'H1D;
 localparam OPCODE_INH_NOP           =  8'H12;
