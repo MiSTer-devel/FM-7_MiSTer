@@ -37,9 +37,19 @@ reg [15:0] init;
 
 assign sout = s;
 
-wire decoded_s = !((data[7:0] < 8'h40) ||
-                   ((data[7:0] == 8'h7f) && (data[15:8] == 8'hff)));
-wire [14:0] decoded_len = { 7'd0, data[15:8] };
+// A T77 entry is ONE big-endian 16-bit word: bit 15 the level, bits 14-0 the
+// duration in 9 us units (XM7 tapelp.c: dat = high*256 + low, tape_in =
+// dat > $7fff, count = dat & $7fff; CSP datarec.cpp load_t77_image the same).
+// The SDRAM presents the even (high) byte in data[7:0].
+//
+// (Superseded decode: "level byte, duration byte; level bytes below $40 are
+// low, $7f/$ff is long silence", duration = the low byte alone. It played
+// every entry of 256 units (2.3 ms) or more short and could flip a long low
+// to high. Data pulses are under 128 units, so most loads survived it; Killer
+// Station did not -- its tape ran ahead of the loader, which then missed the
+// 1000 zero bytes before its sync and framed the $FF as $DF.)
+wire decoded_s = data[7];
+wire [14:0] decoded_len = { data[6:0], data[15:8] };
 
 `ifdef DEBUG_TAPE
 reg [24:0] dbg_entries   = 0;   // entries latched
@@ -119,11 +129,6 @@ always @(posedge clk_tick, posedge rewind) begin
           end
         end
         else begin
-          // A T77 entry is stored as (level byte, duration byte). The SDRAM
-          // interface presents the byte at the even address in data[7:0], so
-          // data[7:0] is the level byte and data[15:8] is the duration. XM7
-          // treats level bytes below $40 as low, except $7f/$ff which is the
-          // long-silence marker and is also low.
           s <= decoded_s;
           len <= decoded_len;
         end
@@ -132,13 +137,11 @@ always @(posedge clk_tick, posedge rewind) begin
         // `len` is in 9.125 us ticks; a 1200 baud half-bit is ~47 and a 2400
         // baud half-bit is ~25, so anything near 0 means the word is wrong.
         dbg_entries <= dbg_entries + 25'd1;
-        dbg_ticks   <= dbg_ticks + { 24'd0, data[15:8] };
+        dbg_ticks   <= dbg_ticks + { 17'd0, decoded_len };
         if (dbg_entries < 25'd24)
           $display("T77 entry %0d addr=$%06x data=$%04x -> level=%0d len=%0d",
                    dbg_entries, sdram_addr, data,
-                   !((data[7:0] < 8'h40) ||
-                     ((data[7:0] == 8'h7f) && (data[15:8] == 8'hff))),
-                   data[15:8]);
+                   decoded_s, decoded_len);
         if (eot)
           $display("T77SUM entries=%0d summed_len=%0d ticks_elapsed=%0d",
                    dbg_entries, dbg_ticks, dbg_tick_count);

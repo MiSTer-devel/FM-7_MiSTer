@@ -8,14 +8,15 @@
 // differs here is the unit. The X1 plays a sampled TAP, so it counts samples;
 // a T77 is a list of (level, duration) entries, so this counts the units
 // t77_decode.v plays, against TICK_HZ (9 us, the format's unit) per second:
-// the bar shows tape time, which runs ~11% ahead of the wall clock because
-// the core plays the unit at 8.083 us (clocks.svh DIV_T77).
+// the core plays the unit at 9.000 us (clocks.svh DIV_T77), so tape time is
+// wall time at Normal.
 //
 // The total is summed while the image downloads, not scanned afterwards: every
-// entry is a level byte then a duration byte, after an 18-byte header, so the
-// sum of the bytes at odd addresses from 19 up is the tape's length in ticks.
-// That is the same byte t77_decode.v takes as the duration (data[15:8], the
-// odd byte), so the bar fills to the end exactly when the decoder gets there.
+// entry is a big-endian word, bit 15 the level and bits 14-0 the duration, after
+// an 18-byte header, so the sum of the low 15 bits of each word from 18 up is
+// the tape's length in ticks -- the same field t77_decode.v plays, so the bar
+// fills to the end exactly when the decoder gets there. (Superseded: summing
+// only the odd byte, which undercounted every entry of 256 units or more.)
 //
 // TAPEBAR_STATUS runs on the system clock and TAPEBAR_OVERLAY on the video
 // clock, with a toggle handshake between them. On this core the two clocks are
@@ -47,11 +48,14 @@ module TAPEBAR #(
 );
     logic [31:0] length = 32'd0;
     logic        old_dl = 1'b0;
+    logic  [6:0] dur_hi = 7'd0;
     always_ff @(posedge clk_sys) begin
         old_dl <= dl;
         if (dl && !old_dl) length <= 32'd0;
-        else if (dl && dl_wr && dl_addr >= 25'd19 && dl_addr[0])
-            length <= length + {24'd0, dl_data};
+        else if (dl && dl_wr && dl_addr >= 25'd18) begin
+            if (!dl_addr[0]) dur_hi <= dl_data[6:0];
+            else             length <= length + {17'd0, dur_hi, dl_data};
+        end
     end
 
     logic [41:0] word;
