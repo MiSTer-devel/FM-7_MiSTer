@@ -120,6 +120,7 @@ static std::string romset_path;
 // 0 selects the first disk and is what an ordinary single-disk image wants.
 static int  opt_disk_index [2] = {0, 0};
 static bool opt_tape_audio = false;  // status[9]
+static bool opt_tape_normal = false; // status[22] "Tape speed": false = 3x, the OSD default
 static bool opt_joykeys = false;     // status[20] "Joypad keys"
 
 static bool  trace_io  = false;
@@ -331,6 +332,7 @@ static int         tape_rewind_frame = -1;
 // undecoded -- tens of thousands of accesses, all of them implemented. Read as a
 // to-do list that sends you to build things that already work, with the one
 // genuine entry buried in the middle.
+//   $0b      boot mode, BASIC/DOS                           (core.v AV_FD0B_SEL)
 //   $10      initiator ROM overlay control                  (AVMEM.v)
 //   $12-$13  320-mode select / sub-monitor bank             (AVMEM.v)
 //   $15-$16  YM2203 command and data                        (SOUND.v)
@@ -338,7 +340,7 @@ static int         tape_rewind_frame = -1;
 //   $80-$93  MMR banks, segment, TWR, enables               (AVMEM.v)
 static bool port_is_decoded(uint8_t p) {
 	if (opt_machine_av &&
-	    (p == 0x10 || p == 0x12 || p == 0x13 ||
+	    (p == 0x0b || p == 0x10 || p == 0x12 || p == 0x13 ||
 	     p == 0x15 || p == 0x16 ||
 	     (p >= 0x30 && p <= 0x34) ||
 	     (p >= 0x80 && p <= 0x93)))
@@ -901,6 +903,8 @@ static void print_usage(const char* argv0) {
 	printf("                            rtl/t77_decode.v, the path that ships)\n");
 	printf("  --tape-audio              Mix the cassette bit and relay click into\n");
 	printf("                            the audio output (OSD \"Tape Audio\")\n");
+	printf("  --tape-speed <3x|normal>  OSD \"Tape speed\": 3x (default, as the OSD) runs\n");
+	printf("                            the main CPU and the tape 3x while it plays\n");
 	printf("  --rewind-at-frame <n>     Pulse the tape rewind bit at frame n\n");
 	printf("  --bootrom <0-3>           0 = F-BASIC (default), 1-3 = DOS boot ROMs\n");
 	printf("  --disk-index <n>          Sub-disk of a multi-disk .d77/.d88 container\n");
@@ -1018,6 +1022,12 @@ static int parse_args(int argc, char** argv) {
 		else if (a == "--disk-writable") { disk_persist_writes = true; }
 		else if (a == "--disk1")      { const char* v = next(); if (v) disk_path1 = v; }
 		else if (a == "--tape-audio") opt_tape_audio = true;
+		else if (a == "--tape-speed") {
+			const char* v = next();
+			if (v && !strcmp(v, "normal")) opt_tape_normal = true;
+			else if (v && !strcmp(v, "3x")) opt_tape_normal = false;
+			else { fprintf(stderr, "--tape-speed wants 3x or normal\n"); return 1; }
+		}
 		else if (a == "--joykeys")    opt_joykeys = true;
 		else if (a == "--bootrom")    { const char* v = next(); if (v) opt_bootrom = atoi(v) & 3; }
 		else if (a == "--disk-index")  { const char* v = next(); if (v) opt_disk_index[0] = atoi(v) & 7; }
@@ -1530,6 +1540,7 @@ static void sim_cycle() {
 	top->machine_av  = opt_machine_av;
 	top->romset_sel  = opt_romset_sel;
 	top->tape_audio  = opt_tape_audio;
+	top->tape_normal = opt_tape_normal;
 	top->joykey_en   = opt_joykeys;
 	top->tape_rewind = (rewind_hold > 0) || tape_rewind_pulse;
 	if (rewind_hold > 0) rewind_hold--;

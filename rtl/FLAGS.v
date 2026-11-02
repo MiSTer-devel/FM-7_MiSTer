@@ -312,11 +312,14 @@ end
 // The leading edge is preserved deliberately -- the P1-4 note above is why this
 // register samples there rather than on release, and that reasoning is
 // unchanged. Only the clock moves.
-reg [2:0] wfd37_sr;
+//
+// Sampled on the strobe's second low cycle, not the third: at the 24 MHz tape
+// turbo a write strobe is only 2 CLKSYS cycles (DERIVED_CLOCKS.md).
+reg [1:0] wfd37_sr;
 always @(posedge CLKSYS) begin
-  wfd37_sr <= { wfd37_sr[1:0], WFD37n };
-  if (~RESETBn)                          m46 <= 8'h0;
-  else if (wfd37_sr[2] & ~wfd37_sr[1])   m46 <= MDATABUS_in;
+  wfd37_sr <= { wfd37_sr[0], WFD37n };
+  if (~RESETBn)                                   m46 <= 8'h0;
+  else if (~WFD37n & ~wfd37_sr[0] & wfd37_sr[1])  m46 <= MDATABUS_in;
 end
 
 assign BUSY = m44_8;

@@ -29,6 +29,10 @@ module CLKCTRL(
   // it off and does not expect to. Tied high in FM-7 mode, where there is no
   // YM2203 at all.
   input FMIRQn,
+  // Tape turbo: the deck is playing and the OSD asks for 3x. Only the main CPU
+  // speeds up -- it runs the cassette routine; the sub only draws.
+  input turbo,
+  output reg turbo_on = 1'b0,  // the main CPU is on the 24 MHz leg right now
   output MCPUCLK, // 8 | 4.9
   output SCPUCLK, // 8 | 4
   output reg [7:0] MDATABUS_out,
@@ -108,7 +112,80 @@ always @(posedge CLKSYS)
 // 48 MHz; CLK6_8 is 48/7 = 6.857 MHz, E = 1.714 MHz. Titles toggle this at
 // runtime -- the FM77AV demo disk disables MMR for its closing palette section
 // precisely to go faster (FM-Techknow p.318) -- so it cannot be a static rate.
-assign MCPUCLK = switch ? ((machine_av & mmr_enabled) ? CLK6_8 : SCLK1) : CLK4_9;
+//
+// Tape turbo puts the 8 MHz leg on 24 MHz (CLKSYS/2), so E = 6 MHz, 3x. The
+// tape's tick goes 3x as well off turbo_on at the same moment (t77_decode),
+// so the BIOS's pulse-width loops count the same and decode the same bytes.
+// Not on the other legs: 3 x 48/7 MHz and 3 x 4.9 MHz are not divides of 48.
+//
+// The leg changes only while SCLK1 is low with at least one more low cycle to
+// go (low now, high two cycles ago: cnt 3 or 4 of clk_en's 0..5), and leaves
+// the fast clock only at the end of one of its high cycles. Every high and low
+// phase on MCPUCLK is therefore at least one whole CLKSYS cycle -- no runt.
+// With turbo off sel stays 0 and MCPUCLK is SCLK1 itself, edge for edge.
+wire turbo_ok = turbo & switch & ~(machine_av & mmr_enabled);
+reg sclk1_d, sclk1_dd;
+reg fast_clk = 1'b0;
+wire sclk1_low_more = ~SCLK1 & sclk1_dd;
+
+// DRAM refresh. The 2 MHz main CPU is halted for a few cycles every 13.02 us
+// while the DRAM refreshes, so it averages ~1.8 MHz: CSP MAINCLOCK_NORMAL =
+// 1798000 (fm7_common.h:79; the halt is described at fm7_mainmem.cpp:123-129),
+// 77AVEMU 1800000, "Actual measurement implies 1.8MHz" (fm77avio.cpp:807).
+// Both references model it as a uniformly slower clock; this holds the clock
+// instead, as the hardware does. Every 104 periods of the running leg (624
+// CLKSYS = 13.0 us on SCLK1) owe 10.5 periods of stall, paid back by counting
+// the periods the stall actually masks, so the average is exactly 93.5/104 of
+// the leg: 2.0 MHz -> 1.798 MHz. Counting in the leg's own periods means a 3x
+// tape load sees the same pattern three times as fast, and the tape's tick
+// (t77_decode) keeps its ratio to the CPU. rf_debt is in half-periods: one
+// masked SCLK1 period is 2, one held CLKSYS cycle of the turbo clock is 1.
+// The stall flag changes only while the clock is low and stays low for the
+// next CLKSYS cycle (sclk1_low_more on SCLK1; the turbo leg holds fast_clk low
+// itself), so a stall only ever lengthens a low phase. Not on the AV's MMR leg
+// (CLK6_8, already the measured 1.6 MHz) or the FM-8 leg.
+localparam RF_PERIOD = 7'd104;     // leg periods per refresh
+localparam RF_OWED   = 8'sd21;     // half-periods of stall per refresh
+reg  [6:0] rf_cnt = 7'd0;
+reg  signed [7:0] rf_debt = 8'sd0;
+reg        rf_stall = 1'b0;
+reg        rf_t2 = 1'b0;           // turbo: one leg period per two CLKSYS
+wire       rf_safe = turbo_on ? ~fast_clk : sclk1_low_more;
+
+always @(posedge CLKSYS) begin
+  sclk1_d  <= SCLK1;
+  sclk1_dd <= sclk1_d;
+  if (~turbo_on) begin
+    fast_clk <= 1'b0;
+    if (turbo_ok & sclk1_low_more & ~rf_stall) begin
+      turbo_on <= 1'b1;
+      fast_clk <= 1'b1;
+    end
+  end
+  else if (fast_clk & ~turbo_ok & sclk1_low_more) begin
+    turbo_on <= 1'b0;
+    fast_clk <= 1'b0;
+  end
+  else if (~fast_clk & rf_stall)
+    fast_clk <= 1'b0;
+  else
+    fast_clk <= ~fast_clk;
+end
+wire SCLK1_main = turbo_on ? fast_clk : (SCLK1 & ~rf_stall);
+wire rf_leg_tick = turbo_on ? rf_t2 : (sclk1_d & ~sclk1_dd);   // a leg period began
+wire rf_turbo_hold = turbo_on & rf_stall & ~fast_clk;   // fast_clk held, not toggled
+always @(posedge CLKSYS) begin
+  rf_t2 <= turbo_on ? ~rf_t2 : 1'b0;
+  if (rf_leg_tick) rf_cnt <= (rf_cnt == RF_PERIOD - 7'd1) ? 7'd0 : rf_cnt + 7'd1;
+  rf_debt <= rf_debt
+           + ((rf_leg_tick && rf_cnt == RF_PERIOD - 7'd1) ? RF_OWED : 8'sd0)
+           - ((~turbo_on & rf_stall & rf_leg_tick) ? 8'sd2 : 8'sd0)
+           - (rf_turbo_hold ? 8'sd1 : 8'sd0);
+  if (~rf_stall & (rf_debt > 8'sd0) & rf_safe) rf_stall <= 1'b1;
+  if ( rf_stall & (rf_debt <= 8'sd0) & rf_safe) rf_stall <= 1'b0;
+end
+
+assign MCPUCLK = switch ? ((machine_av & mmr_enabled) ? CLK6_8 : SCLK1_main) : CLK4_9;
 
 // SUPERSEDED CLAIM: "the FM-7/FM-8 switch changes the MAIN CPU's clock only,
 // the sub runs at the same rate either way" -- disproven by the Fujitsu FM-7
@@ -118,12 +195,11 @@ assign MCPUCLK = switch ? ((machine_av & mmr_enabled) ? CLK6_8 : SCLK1) : CLK4_9
 // DIP switch, read back on $FD00 b0, which page 22's I/O map labels 0:1.2M /
 // 1:2M. See docs/FM77AV.md.
 //
-// So this core currently sits in a combination no real FM-7 can be in: main on
-// the FM-8 leg at 4.8 MHz, sub on the FM-7 leg at 8 MHz. That is why raising
-// only the main clock breaks the FM77AV demo -- it moves the main:sub ratio,
-// and the paragraph below is the evidence that the ratio is load-bearing.
-// Per the manual the fix is to move BOTH to 8 MHz, plus the AV's MMR-conditional
-// drop to ~1.6 MHz (FM-Techknow p.334). Untried; see TODO.md.
+// Both are now on SCLK1 in FM-7 mode, and the AV's MMR-on leg is CLK6_8
+// (FM-Techknow p.334's ~20% drop). (superseded: "main on the FM-8 leg at
+// 4.8 MHz, sub at 8 MHz -- untried" -- the mux legs were the wrong way round,
+// and raising only the main clock broke the FM77AV demo because it moved the
+// main:sub ratio, which the paragraph below shows is load-bearing.)
 //
 // This used to hand the sub SCLK2 in FM-7 mode, which is 4 MHz -- E = 1 MHz,
 // half speed. SCLK2 is not the sub's clock at all; MB60H010.v labels it "clock

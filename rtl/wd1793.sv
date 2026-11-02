@@ -57,13 +57,14 @@ module wd1793 #(parameter RWMODE=0, EDSK=1)
 	// header size field against the truncated img_size can never match:
 	// 2495040 & $FFFFF = 397888, against a 415840 field.
 	//
-	// Used for format identification AND for the scan bound (see scan_limit).
-	// (Superseded claim: "for format identification only ... the addressing
-	// below stays 20-bit and reaches only the first disk, which is all any of
-	// these titles boots from." The masking WRAPS rather than clamps, so a
-	// container is not guaranteed to reach even its first disk -- that is what
-	// blanked Ys - Ancient Ys Vanished Omen [a]. Addressing is still 20-bit and
-	// still reaches only the first disk; the BOUND is what had to change.)
+	// Used for format identification, the scan bound and, since the .d77
+	// path went to 24 bits, all of its addressing: scan_addr, the track table,
+	// edsk_offset and buff_a. A single .d77 can be over 1 MB too -- Juegos 5
+	// [b] is 1,622,688 bytes, a track-level dump with every sector stored four
+	// times -- and the 20-bit path rejected it as not-a-.d77, served T0/R1 from
+	// the header's zero bytes and ran into a NEG <$00 sled.
+	// (Superseded claim: "Addressing is still 20-bit and still reaches only the
+	// first disk". img_size stays 20-bit for the fixed-geometry raw images.)
 	input [23:0] img_size_id,
 
 	// Which disk inside a multi-disk container to present, 0-based.
@@ -108,7 +109,7 @@ assign dout      = q;
 assign drq       = s_drq;
 assign busy      = s_busy;
 assign intrq     = s_intrq;
-assign sd_lba    = scan_active ? scan_addr[19:9] : buff_a[19:9] + sd_block;
+assign sd_lba    = scan_active ? scan_addr[23:9] : buff_a[23:9] + sd_block;
 assign prepare   = EDSK ? scan_active : img_mounted;
 assign buff_addr = {buff_a[19:9], 9'd0} + byte_addr;
 assign buff_read = ((addr == A_DATA) && buff_rd);
@@ -116,7 +117,7 @@ assign buff_read = ((addr == A_DATA) && buff_rd);
 reg   [7:0] sectors_per_track, edsk_spt = 0;
 wire [10:0] sector_size = 11'd128 << wd_size_code;
 reg  [10:0] byte_addr;
-reg  [19:0] buff_a;
+reg  [23:0] buff_a;
 reg   [1:0] wd_size_code;
 
 wire  [7:0] buff_dout;
@@ -148,26 +149,12 @@ reg         var_size  = 0;
 reg  [19:0] disk_size;
 reg         layout_r;
 
-// Bound for the mount-time D77 scan. It must be min(true size, the 20-bit
-// address space) -- NOT img_size, which is the true size masked to 20 bits.
-//
-// The mask WRAPS, it does not clamp, and that is the whole bug. Ys - Ancient Ys
-// Vanished Omen [a] is a 1,305,456-byte multi-disk container: 1305456 & $FFFFF
-// = 256,880, which is SMALLER than the container's own first disk (415,840).
-// The scan therefore stopped 80.3% of the way short of the file and every track
-// from index 50 (track 25 side 0) on was never entered in the table. The title
-// boots and runs -- the early tracks are all present -- and then its loader asks
-// for track 33 side 0 sector 4 at offset 343,040, gets RECORD NOT FOUND, and
-// retries: 4,242 read commands against the reference's 64, no VRAM write ever
-// issued, black screen.
-//
-// XANADU.D77 has the same defect and survived it: 2,495,040 wraps to 397,888
-// against a 415,840-byte first disk, so it loses only its tail.
-//
-// Under 1 MB this is bit-identical to the old expression, so ordinary single
-// disk images are untouched -- the gate is unchanged, every counter included.
-wire [19:0] scan_limit = (img_size_id[23:20] != 4'd0) ? 20'hFFFFF
-                                                      : img_size_id[19:0];
+// Bound for the mount-time scan: the TRUE image size, never img_size, which is
+// masked to 20 bits. The mask WRAPS rather than clamps: Ys - Ancient Ys
+// Vanished Omen [a] (1,305,456 bytes) wrapped to 256,880, smaller than its own
+// first disk, and lost every track from index 50 on. Under 1 MB this equals
+// img_size, so ordinary images are untouched.
+wire [23:0] scan_limit = img_size_id;
 wire [19:0] hs  = (layout_r & side) ? disk_size >> 1 : 20'd0;
 wire  [7:0] dts = {disk_track[6:0], side} >> layout_r;
 always @(posedge clk_sys) begin
@@ -219,6 +206,14 @@ localparam A_TRACK           = 1;
 localparam A_SECTOR          = 2;
 localparam A_DATA            = 3;
 
+// WRITE TRACK timing at the 1 MHz ce: 2D MFM is 250 kbit/s, 32 us a byte, and
+// a 300 rpm revolution is 6250 bytes.
+localparam [5:0]  WTRK_BYTE_CE = 6'd32;
+localparam [12:0] WTRK_BYTES   = 13'd6250;
+localparam        WTRK_REV_CE  = 200000;   // one revolution, 200 ms
+// Multi-sector read: SECTOR register update after the last byte, in ce (us).
+localparam        MULTI_SECTOR_CE = 30;
+
 // States
 typedef enum 
 {
@@ -243,6 +238,11 @@ typedef enum
 	STATE_WRITE,
 	STATE_WRITE_1,
 	STATE_WRITE_2,
+
+	STATE_WTRK,
+	STATE_WTRK_1,
+
+	STATE_MULTI,
 
 	STATE_ABORT,
 	STATE_WAIT,
@@ -425,6 +425,8 @@ always @(posedge clk_sys) begin
 	reg       rw_type;
 	integer   wait_time;
 	reg [3:0] read_timer;
+	reg [5:0] wtrk_timer;
+	reg [12:0] wtrk_left;
 	reg [9:0] seektimer;
 	reg [7:0] ra_sector;
 	reg       multisector;
@@ -738,8 +740,8 @@ always @(posedge clk_sys) begin
 						if(next_length == 0) begin
 							// either read the next sector, or stop if this is track end
 							if(multisector) begin
-								wdreg_sector <= wdreg_sector + 1'b1;
-								state <= STATE_SEARCH;
+								wait_time <= MULTI_SECTOR_CE;
+								state <= STATE_MULTI;
 							end else begin
 								state <= STATE_ENDCOMMAND;
 							end
@@ -813,6 +815,61 @@ always @(posedge clk_sys) begin
 							byte_addr <= byte_addr + 1'd1;
 							data_length <= next_length;
 							state <= STATE_WRITE;
+						end
+					end
+				end
+
+			// Multi-sector read: the SECTOR register moves on only after the last
+			// byte has been taken, 30 us later in CSP (EVENT_MULTI1,
+			// mb8877.cpp:533) and at the next sector's preparation in 77AVEMU
+			// (needIncrementSector, fm77avfdc.cpp:871). Albatross reads $FD1B,
+			// then compares the last sector it wants against $FD1A and stores
+			// the byte only if it has not been passed ($9650: LDA <$1B / CMPB
+			// <$1A / BCS done / STA ,Y+). Moving the register on the same tick
+			// raced that compare and lost the final byte of 4 of its first 16
+			// transfers in sim; the title screen drew stripes and a ghost ball.
+			STATE_MULTI:
+				begin
+					if(wait_time) wait_time <= wait_time - 1;
+					else begin
+						wdreg_sector <= wdreg_sector + 1'b1;
+						state <= STATE_SEARCH;
+					end
+				end
+
+			// WRITE TRACK: one DRQ per byte time for a whole revolution. The bytes
+			// are taken and dropped -- a .d77 cannot be re-laid-out from here, so
+			// a format leaves the track's sectors and data as they were.
+			STATE_WTRK:
+				begin
+					write_data <= 0;
+					s_drq_busy <= 2'b11;
+					wtrk_timer <= WTRK_BYTE_CE - 6'd2;   // + this cycle = 32
+					state      <= STATE_WTRK_1;
+				end
+			STATE_WTRK_1:
+				begin
+					if(write_data & s_drq) s_drq_busy <= 2'b01;
+					if(wtrk_left == WTRK_BYTES && s_drq & ~write_data) begin
+						// The first byte has until the index pulse: writing starts
+						// there, and only a byte still missing then is lost data
+						// that ends the command (WD1793 datasheet, Write Track).
+						if(wait_time) wait_time <= wait_time - 1;
+						else begin
+							s_lostdata <= 1;
+							state <= STATE_ENDCOMMAND;
+						end
+					end else begin
+						wtrk_timer <= wtrk_timer - 1'd1;
+						if(!wtrk_timer) begin
+							// A later byte the CPU did not supply is written as $00
+							// and sets LOST DATA; the command carries on to the index.
+							if(s_drq & ~write_data) begin
+								s_lostdata <= 1;
+								s_drq_busy <= 2'b01;
+							end
+							wtrk_left <= wtrk_left - 1'd1;
+							state <= (wtrk_left == 1) ? STATE_ENDCOMMAND : STATE_WTRK;
 						end
 					end
 				end
@@ -1076,10 +1133,24 @@ always @(posedge clk_sys) begin
 								end
 							'hF:  // WRITE TRACK
 								begin
+									// CSP cmd_writetrack (mb8877.cpp:1136): a write-
+									// protected disk ends at once with WRITE FAULT,
+									// otherwise DRQ runs from index to index. Woody
+									// Poco's formatter polls $FD18 bit 1 for DRQ with
+									// no INTRQ or BUSY exit, so without the DRQ stream
+									// it spins for ever.
 									s_wpe <= din[5];
 									{s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
 									s_drq_busy <= 2'b01;
-									state <= STATE_WAIT;
+									if(!ready) state <= STATE_WAIT;
+									else if(s_readonly) begin
+										s_wrfault <= 1;
+										state <= STATE_WAIT;
+									end else begin
+										wtrk_left <= WTRK_BYTES;
+										wait_time <= WTRK_REV_CE;
+										state <= STATE_WTRK;
+									end
 								end
 							'hE:	// READ TRACK
 								begin
@@ -1145,7 +1216,7 @@ end
 `endif
 
 reg        scan_active = 0;
-reg [19:0] scan_addr;
+reg [23:0] scan_addr;
 reg        scan_wr;
 
 wire [1:0] edsk_sizecode;          // sector size: 0=128K, 1=256K, 2=512K, 3=1024K
@@ -1156,7 +1227,7 @@ wire [1:0] edsk_crc;
 wire       edsk_side;              // Side number (0 or 1)
 wire [6:0] edsk_track;             // Track number
 wire [7:0] edsk_sector;            // Sector number 0..15
-wire[19:0] edsk_offset;
+wire[23:0] edsk_offset;
 wire [7:0] edsk_trackf, edsk_sidef;
 
 reg [10:0] edsk_addr, edsk_start;
@@ -1192,11 +1263,11 @@ generate
 		// use the core's explicit Cyclone V altsyncram wrapper.
 		reg         edsk_wren = 0;
 		reg  [10:0] edsk_wraddr;
-		reg  [55:0] edsk_wrdata;
-		wire [55:0] edsk_q;
+		reg  [59:0] edsk_wrdata;
+		wire [59:0] edsk_q;
 
 		dpram #(
-			.DATAWIDTH(56),
+			.DATAWIDTH(60),
 			.ADDRWIDTH(11),
 			.NUMWORDS(2048)
 		) edsk_ram (
@@ -1206,7 +1277,7 @@ generate
 			.wren_a    (edsk_wren),
 			.q_a       (),
 			.address_b (edsk_addr),
-			.data_b    (56'd0),
+			.data_b    (60'd0),
 			.wren_b    (1'b0),
 			.q_b       (edsk_q)
 		);
@@ -1263,13 +1334,13 @@ generate
 		// Compacted track table: {table index, byte offset} for present tracks
 		// only, in the order they appear in the file. Zero entries are dropped
 		// at build time so the second pass never has to skip over them.
-		reg [27:0] d77_pres[164];
+		reg [31:0] d77_pres[164];
 		reg  [7:0] d77_cnt = 0;      // how many entries are valid
 		reg  [7:0] d77_rd  = 0;      // cursor: the track we are looking for
-		reg [27:0] d77_q;
+		reg [31:0] d77_q;
 		always @(posedge clk_sys) d77_q <= d77_pres[d77_rd];
-		wire  [7:0] d77_idx = d77_q[27:20];
-		wire [19:0] d77_off = d77_q[19:0];
+		wire  [7:0] d77_idx = d77_q[31:24];
+		wire [23:0] d77_off = d77_q[23:0];
 
 		always @(posedge clk_sys) begin
 			reg old_active, old_wr;
@@ -1283,7 +1354,7 @@ generate
 			reg  [7:0] crc2;
 			reg  [7:0] sectors;
 			reg [15:0] track_size, track_pos;
-			reg [19:0] offset, offset1;
+			reg [23:0] offset, offset1;
 			reg  [7:0] size_lo;
 			reg [10:0] secpos;
 			reg  [7:0] trackf, sidef;
@@ -1292,7 +1363,7 @@ generate
 			reg  [1:0] fmt;                    // which format we committed to
 			reg        edsk_bad;               // signature mismatched somewhere
 			reg [23:0] d_tot;                  // header $1c..$1e, total size LE
-			reg [19:0] d_acc;                  // track table entry being built
+			reg [23:0] d_acc;                  // track table entry being built
 			reg  [7:0] d_max;                  // highest present table index
 			reg        d_wpb;                  // header $1a, before we commit
 			reg  [1:0] d_st;                   // 0 seek track, 1 header, 2 data
@@ -1300,6 +1371,8 @@ generate
 			reg        d_first;                // first header of this track
 			reg [15:0] d_dlen;                 // data bytes still to skip
 			reg  [7:0] d_left;                 // sectors still to come this track
+			reg        d_lie;                  // this track's declared count is > 32
+			reg [31:0] d_seen;                 // R values < 32 already indexed on it
 			reg  [7:0] d_C, d_H, d_R;          // header +0..+2, as recorded
 			reg  [1:0] d_N;                    // header +3, sector size code
 			reg  [1:0] d_crc;                  // header +8, {ID CRC err, data CRC err}
@@ -1308,7 +1381,7 @@ generate
 			reg        d_side;                 // physical side,  from the table
 			reg  [7:0] clr_cnt;
 			reg        clr_run;
-			reg [19:0] d_base;                 // file offset of the selected disk
+			reg [23:0] d_base;                 // file offset of the selected disk
 			reg  [2:0] skip_left;              // sub-disks still to step over
 
 			// Every .d77 field below is an offset from the SELECTED disk's start,
@@ -1316,10 +1389,10 @@ generate
 			// table's own entries are all disk-relative. The one exception is the
 			// sector data address written into edsk[], which is what the runtime
 			// hands to the SD reader and must stay absolute.
-			reg [19:0] rel;
-			reg [20:0] next_base;
+			reg [23:0] rel;
+			reg [24:0] next_base;
 			rel       = scan_addr - d_base;
-			next_base = {1'b0, d_base} + {1'b0, d_tot[19:0]};
+			next_base = {1'b0, d_base} + {1'b0, d_tot};
 
 			old_active <= scan_active;
 			edsk_wren <= 0;
@@ -1398,8 +1471,8 @@ generate
 				if(rel == 20'h1e) d_tot[23:16]<=scan_data;
 				if(rel == 20'h1f) begin
 					if(!edsk_bad) fmt <= FMT_EDSK;
-					else if(~|scan_data && ~|d_tot[23:20] &&
-					        (d_tot[23:0] <= img_size_id) && (d_tot[19:0] >= 20'h2b0)) begin
+					else if(~|scan_data &&
+					        (d_tot <= img_size_id) && (d_tot >= 24'h2b0)) begin
 						// This header is sound. If sub-disks remain to be
 						// stepped over, move the base to the next one and keep
 						// scanning WITHOUT committing -- the body below stays
@@ -1419,7 +1492,7 @@ generate
 						// becomes ready, which reads as a container the scanner
 						// cannot parse rather than as an out-of-range request.
 						if(|skip_left && (next_base < {1'b0, scan_limit})) begin
-							d_base    <= next_base[19:0];
+							d_base    <= next_base[23:0];
 							skip_left <= skip_left - 1'd1;
 						end
 						else begin
@@ -1447,7 +1520,7 @@ generate
 						case(rel[1:0])
 							0: d_acc[7:0]    <= scan_data;
 							1: d_acc[15:8]   <= scan_data;
-							2: d_acc[19:16]  <= scan_data[3:0];
+							2: d_acc[23:16]  <= scan_data;
 							3: if(|d_acc && ~|scan_data && (d77_cnt < 8'd164)) begin
 									d77_pres[d77_cnt] <= {rel[9:2] - 8'd8, d_acc};
 									d77_cnt <= d77_cnt + 1'd1;
@@ -1496,6 +1569,7 @@ generate
 							d_first <= 1;
 							d_hpos  <= 1;
 							d_st    <= 1;
+							d_seen  <= 0;
 							// step the cursor now; the value is not needed
 							// again until this track ends, which is thousands
 							// of cycles away.
@@ -1548,6 +1622,8 @@ generate
 												// purpose so READ ADDRESS can report the
 												// lie. That guard cost 68 $fdxx cycles on
 												// the gate's Thexder row.
+												d_lie  <= ({scan_data, d_slo} != 16'h1000) &
+															 (|scan_data | (d_slo > 8'd32));
 												d_left <= ({scan_data, d_slo} == 16'h1000) ? 8'h10 :
 															 (|scan_data | (d_slo > 8'd32))   ? 8'd32 :
 															 (|d_slo)                         ? d_slo : 8'h01;
@@ -1581,10 +1657,26 @@ generate
 												// found by its physical position and
 												// still reports the lie to READ ADDRESS.
 												// Data begins at the very next byte.
-												if(edsk_size < 11'd1992) begin
+												// On a track whose count lied, index each
+												// sector number once. Juegos 5 [b] and Ura
+												// DOS 01 [b] are track-level dumps: every
+												// track declares 256 and holds its 16
+												// sectors four times over (64 records), so
+												// 80 tracks indexed at 32 records each
+												// would overrun edsk[] (2,543 entries for
+												// 1,992) and drop the back half of the
+												// disk. A real FDC returns the first copy
+												// under the head; with identical copies
+												// the first in the file is as good.
+												// Honest-count tracks keep every
+												// duplicate, so duplicate-ID protection
+												// still sees all of them.
+												if(d_lie & ~|d_R[7:5] & d_seen[d_R[4:0]]) ;
+												else if(edsk_size < 11'd1992) begin
+													if(~|d_R[7:5]) d_seen[d_R[4:0]] <= 1;
 													edsk_wren   <= 1;
 													edsk_wraddr <= edsk_size;
-													edsk_wrdata <= {d_track, d_side, d_C, d_H, d_R, d_N, d_crc, scan_addr + 20'd1};
+													edsk_wrdata <= {d_track, d_side, d_C, d_H, d_R, d_N, d_crc, scan_addr + 24'd1};
 													edsk_size <= edsk_size + 1'd1;
 `ifdef DEBUG_FDC_SCAN
 													$display("D77SEC %0d %0d %0d %0d %0d %0d %0d %0d",

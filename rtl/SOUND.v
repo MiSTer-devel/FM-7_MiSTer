@@ -89,14 +89,18 @@ wire reset = ~RESETBn;
 // doubled clock. Both machines end up with the SSG at 1.2288 MHz, which is the
 // only arrangement in which FM-7 software plays at the same pitch on both.
 //
-// Residual, unchanged: 48/40 = 1.2 MHz and 48/20 = 2.4 MHz against a true
-// 1.2288/2.4576, so both sit 2.3% flat -- about 0.4 semitone. Fixing that needs
-// a fractional divider and is a separate job.
-localparam CORE_CLK_2_4 = 19;   // 48/2.4 - 1
-wire EN_CLK_1_2, EN_CLK_2_4;
-clk_en #(CORE_CLK_1_2) u_ck_en   (.ref_clk(CLKSYS), .cen(EN_CLK_1_2));
-clk_en #(CORE_CLK_2_4) u_ck_en_2 (.ref_clk(CLKSYS), .cen(EN_CLK_2_4));
-wire YM_CEN = machine_av ? EN_CLK_1_2 : EN_CLK_2_4;
+// The rate is exact on average: 48 / 2.4576 = 625/32, so a phase accumulator
+// fires 32 enables every 625 CLKSYS cycles (16 for the AV's 1.2288), each 19
+// or 20 cycles apart. (superseded: integer dividers 48/20 = 2.4 and
+// 48/40 = 1.2 MHz, which left both machines 2.3% -- 0.4 semitone -- flat.)
+reg  [9:0] ym_acc = 10'd0;
+reg        YM_CEN = 1'b0;
+wire [9:0] ym_step = machine_av ? 10'd16 : 10'd32;
+wire [10:0] ym_sum = {1'b0, ym_acc} + {1'b0, ym_step};
+always @(posedge CLKSYS) begin
+  YM_CEN <= (ym_sum >= 11'd625);
+  ym_acc <= (ym_sum >= 11'd625) ? ym_sum[9:0] - 10'd625 : ym_sum[9:0];
+end
 
 //----------------------------------------------------------------------------
 // The two register windows
@@ -133,9 +137,10 @@ wire YM_CEN = machine_av ? EN_CLK_1_2 : EN_CLK_2_4;
 // LUT-built decode on general routing where it GLITCHES as its inputs arrive
 // skewed (docs/REFERENCE.md section 3). A glitch is one or two CLKSYS cycles
 // wide, so a detector that only compares against the previous cycle still
-// reports it as an edge -- which is the very thing that needs fixing. Taking
-// the edge from a 3-stage shift register means a transient has to persist to
-// be believed. Same conversion as FLAGS, PERIPHERAL, MFD, PAL and MB60H010.
+// reports it as an edge -- which is the very thing that needs fixing. The
+// strobe is believed only once it has been low for two consecutive cycles, so
+// a one-cycle transient is dropped. Same conversion as FLAGS, PERIPHERAL, MFD,
+// PAL and MB60H010.
 //
 // This module is the one docs/REFERENCE.md singles out as unprovable by the
 // usual loop: "SOUND.v bdir/bc1 (PSG bus protocol -> all sound and both
@@ -148,30 +153,33 @@ wire YM_CEN = machine_av ? EN_CLK_1_2 : EN_CLK_2_4;
 // port A then reads $ff -- "no stick" -- until software happens to write it
 // again. Sound survives, the stick does not.
 //
-// Simulation cannot confirm this: Verilator gives one clean edge per access, so
-// the behaviour is identical before and after. ONLY HARDWARE SETTLES IT.
+// Simulation cannot confirm the glitch side: Verilator gives one clean edge
+// per access. (It does check the strobe width: sound_tb "2-cycle strobes".)
+// ONLY HARDWARE SETTLES THE GLITCH.
 //
 // The leading edge is kept deliberately -- a trailing-edge sample races the CPU
-// releasing the bus, which is the $fd37 hazard in FLAGS.v. The filtered sample
-// lands two CLKSYS cycles into a strobe that is tens of cycles wide (E is
-// 1.2288 MHz against 48 MHz), so it stays comfortably inside the access.
-reg [2:0] wfd0d_sr, wfd0e_sr, wfd15_sr, wfd16_sr;
+// releasing the bus, which is the $fd37 hazard in FLAGS.v. The sample lands on
+// the strobe's SECOND low cycle (low now and the cycle before, high before
+// that): a write strobe is 6 CLKSYS cycles with the main CPU at 8 MHz and only
+// 2 at the 24 MHz tape turbo, measured on $FD00 (DERIVED_CLOCKS.md). The old
+// shape, `sr[2] & ~sr[1]`, sampled on the third and read the released bus at 3x.
+reg [1:0] wfd0d_sr, wfd0e_sr, wfd15_sr, wfd16_sr;
 always @(posedge CLKSYS) begin
-  wfd0d_sr <= { wfd0d_sr[1:0], WFD0Dn };
-  wfd0e_sr <= { wfd0e_sr[1:0], WFD0En };
-  wfd15_sr <= { wfd15_sr[1:0], WFD15n };
-  wfd16_sr <= { wfd16_sr[1:0], WFD16n };
+  wfd0d_sr <= { wfd0d_sr[0], WFD0Dn };
+  wfd0e_sr <= { wfd0e_sr[0], WFD0En };
+  wfd15_sr <= { wfd15_sr[0], WFD15n };
+  wfd16_sr <= { wfd16_sr[0], WFD16n };
 end
 
-wire wfd0d_stb = wfd0d_sr[2] & ~wfd0d_sr[1];
-wire wfd0e_stb = wfd0e_sr[2] & ~wfd0e_sr[1];
-wire wfd15_stb = wfd15_sr[2] & ~wfd15_sr[1];
-wire wfd16_stb = wfd16_sr[2] & ~wfd16_sr[1];
+wire wfd0d_stb = ~WFD0Dn & ~wfd0d_sr[0] & wfd0d_sr[1];
+wire wfd0e_stb = ~WFD0En & ~wfd0e_sr[0] & wfd0e_sr[1];
+wire wfd15_stb = ~WFD15n & ~wfd15_sr[0] & wfd15_sr[1];
+wire wfd16_stb = ~WFD16n & ~wfd16_sr[0] & wfd16_sr[1];
 
 wire       cmd_stb = wfd0d_stb | wfd15_stb;
 wire [3:0] cmd_new = wfd15_stb ? MDATABUS_in[3:0] : { 2'b00, MDATABUS_in[1:0] };
-// MDATABUS_in is stable for the whole bus cycle, so sampling it two cycles
-// into the strobe rather than on its edge is safe -- and is what makes the
+// MDATABUS_in is stable for the whole strobe, so sampling it on the second low
+// cycle rather than on its edge is safe -- and is what makes the
 // filter free: the byte the CPU is driving has not moved.
 wire       data_stb = wfd0e_stb | wfd16_stb;
 

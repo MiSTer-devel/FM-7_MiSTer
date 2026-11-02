@@ -383,6 +383,9 @@ wire empty_sel  = (fdc_drv >= 2'd2);
 wire ready0, ready1;
 wire drq0, drq1, intrq0, intrq1;
 wire ready_sel = drive0_sel ? ready0 : drive1_sel ? ready1 : 1'b0;
+// Drives 2 and 3 never raise DRQ: nothing answers. A transfer to one still
+// ends, because the boot ROM's loop ($FF82-$FF8B, LDB $FD1F / BPL / LSLB /
+// BPL) also exits on IRQ, which empty_intrq raises after the busy period.
 wire drq_sel   = drive0_sel ? drq0   : drive1_sel ? drq1   : 1'b0;
 wire intrq_sel = drive0_sel ? intrq0 : drive1_sel ? intrq1 : empty_intrq;
 
@@ -578,8 +581,8 @@ wd1793 #(.RWMODE(1), .EDSK(1)) u_wd1793_0
   .side         ( fdc_side          ),
   .ready        ( ready0            ),
 
-  // SD block interface (RWMODE 1). img_size is 20 bits in the core: 1 MB max,
-  // which covers 2D (320-360 KB) and 2DD .d77 images comfortably.
+  // SD block interface (RWMODE 1). img_size (20 bits) sizes the raw fixed-
+  // geometry images; a .d77 is addressed through img_size_id, 24 bits.
   .img_mounted  ( img_mounted[0]    ),
   .img_size     ( img_size[19:0]    ),
   .img_size_id  ( img_size[23:0]    ),

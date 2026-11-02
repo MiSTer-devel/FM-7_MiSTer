@@ -54,14 +54,24 @@ assign motor = m10[1];
 // compared against the previous cycle. A decode glitch is one or two CLKSYS
 // cycles wide, so a one-cycle detector still reports it as an edge -- the very
 // thing being fixed. Taking the edge from the filtered copy makes a transient
-// have to persist to be believed. The sample lands two CLKSYS cycles into the
-// strobe rather than on its edge, and E-high is about 19 CLKSYS cycles, so it
-// stays comfortably inside the access. Shape from DERIVED_CLOCKS.md.
-reg [2:0] wfd00_sr, wfd01_sr, wfd05_sr;
+// have to persist to be believed. Shape from DERIVED_CLOCKS.md.
+//
+// The sample is taken on the strobe's SECOND low cycle: low now and the cycle
+// before, high the one before that. A one-cycle glitch is still rejected, and
+// the sample stays inside the shortest strobe the machine makes. That is a
+// tape-turbo write (CLKCTRL.v, main CPU on 24 MHz): measured, WFD00n is low
+// for 6 CLKSYS cycles at 8 MHz but only 2 at 24 MHz, with the data valid on
+// both. Sampling a cycle later, as this did, read the undriven bus as $00 --
+// the BIOS's `STB #$42` motor-on mid-load landed as $00, the motor stopped,
+// and the load hung waiting for a start bit at $f441.
+reg [1:0] wfd00_sr, wfd01_sr, wfd05_sr;
+wire wfd00_stb = ~WFD00n & ~wfd00_sr[0] & wfd00_sr[1];
+wire wfd01_stb = ~WFD01n & ~wfd01_sr[0] & wfd01_sr[1];
+wire wfd05_stb = ~WFD05n & ~wfd05_sr[0] & wfd05_sr[1];
 always @(posedge CLKSYS) begin
-  wfd00_sr <= { wfd00_sr[1:0], WFD00n };
-  wfd01_sr <= { wfd01_sr[1:0], WFD01n };
-  wfd05_sr <= { wfd05_sr[1:0], WFD05n };
+  wfd00_sr <= { wfd00_sr[0], WFD00n };
+  wfd01_sr <= { wfd01_sr[0], WFD01n };
+  wfd05_sr <= { wfd05_sr[0], WFD05n };
   if (~RESETBn) begin
     m10 <= 8'd0;
     m2  <= 8'd0;
@@ -69,9 +79,9 @@ always @(posedge CLKSYS) begin
   end
   else begin
     // filtered LEADING edge (these strobes are active low)
-    if (wfd00_sr[2] & ~wfd00_sr[1]) m10 <= MDATABUS_in;                        // $fd00
-    if (wfd01_sr[2] & ~wfd01_sr[1]) m2  <= MDATABUS_in;                        // $fd01
-    if (wfd05_sr[2] & ~wfd05_sr[1]) m9  <= { MDATABUS_in[7:6], MDATABUS_in[0] }; // $fd05
+    if (wfd00_stb)                  m10 <= MDATABUS_in;                        // $fd00
+    if (wfd01_stb)                  m2  <= MDATABUS_in;                        // $fd01
+    if (wfd05_stb)                  m9  <= { MDATABUS_in[7:6], MDATABUS_in[0] }; // $fd05
   end
 end
 

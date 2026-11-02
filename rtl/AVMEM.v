@@ -208,6 +208,14 @@ wire vram_addr_sel = machine_av &&
                      (physical_address < 18'h1c000);
 wire vram_sel = vram_addr_sel && sub_open;
 assign VRAM_SEL   = vram_sel;
+// The same rule covers the rest of the sub system's physical range: work RAM
+// $1C000-$1D37F, the shared window's MMR alias, sub I/O and the font/monitor ROM
+// ($1D800-$1FFFF). Both references gate all of $10000-$1FFFF on the halt --
+// 77AVEMU above, CSP `read_direct_access`/`write_direct_access`
+// (`mainmem_readseq.cpp:155`, `mainmem_writeseq.cpp:39`). Without it a running
+// sub's work RAM was readable and writable through MMR. Sub I/O carries its own
+// gate in core.v as well.
+wire subsys_closed = machine_av && (physical_address[17:14] == 4'b0111) && !sub_open;
 assign VRAM_PLANE = physical_address[15:14]; // 0=B, 1=R, 2=G
 // 77AVEMU's TransformVRAMAddress preserves the plane/page high bits while
 // wrapping the low address at 8 KB in 320x200 mode (16 KB in 640x200 mode).
@@ -257,6 +265,19 @@ always @(posedge CLKSYS) begin
     $display("AVMEM BR phys=$%05x", physical_address);
   if (av_ungated_wr & ~av_uw_d & ~sub_open)
     $display("AVMEM BW phys=$%05x", physical_address);
+end
+`endif
+`ifdef DEBUG_SUBGATE
+// Every main-CPU access subsys_closed turns away, so a sweep can say whether any
+// title ever reached the running sub's RAM or ROM through MMR.
+reg sg_r_d, sg_w_d;
+always @(posedge CLKSYS) begin
+  sg_r_d <= subsys_closed && ~RDQEn;
+  sg_w_d <= subsys_closed && av_write;
+  if (subsys_closed && ~RDQEn && !sg_r_d)
+    $display("SUBGATE R phys=$%05x", physical_address);
+  if (subsys_closed && av_write && !sg_w_d)
+    $display("SUBGATE W phys=$%05x data=$%02x", physical_address, DIN);
 end
 `endif
 assign VRAM_DIN   = DIN;
@@ -336,7 +357,7 @@ wire mmr_ram_sel = mmr_enable && (MADDRBUS < 16'hfc00) &&
                      ((physical_address >= 18'h20000) &&
                       (physical_address < 18'h36000)));
 wire ram_write = av_write && !io_sel && !bootram_sel && !vram_sel &&
-                 !shared_sel && !subio_sel && (MADDRBUS < 16'hfffe) &&
+                 !shared_sel && !subio_sel && !subsys_closed && (MADDRBUS < 16'hfffe) &&
                  (mmr_ram_sel || ((!initiator_sel || twr_sel) && !fbasic_sel));
 // The 256 KB physical space is not 256 KB of RAM. Backing all of it with one
 // `dpram #(8,18)` cost 2,097,152 block-memory bits -- a third of the whole
@@ -585,6 +606,7 @@ end
 // on the halt, so without this the read falls through to `ram_q`, and physical
 // $10000-$1BFFF is not part of `ram_sel`.
 assign DOUT = bootram_sel ? boot_q :
+              subsys_closed ? 8'hff :
               vram_addr_sel ? (sub_open ? VRAM_DOUT : 8'hff) :
               subio_sel ? SUBIO_DOUT :
               shared_sel ? (sub_open ? SHARED_DOUT : 8'hff) : ram_q;

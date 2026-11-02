@@ -41,6 +41,7 @@ module emu
 	input         romset_sel,       // status[19]    "System ROM" set 0 / set 1
 	input         tape_rewind,      // status[8]     "Tape Rewind"
 	input         tape_audio,       // status[9]     "Tape Audio"
+	input         tape_normal,      // status[22]    "Tape speed" Normal (0 = 3x)
 
 	// [7:0] scancode, [8] extended, [9] pressed, [10] toggles per event
 	input  [10:0] ps2_key,
@@ -256,6 +257,13 @@ wire signed [8:0] relay_snd;
 
 wire        cin;
 wire        motor;
+wire        tape_playing;
+wire        turbo_on;
+
+// As FM-7_MiSTer.sv: Tape speed is read while the deck is idle.
+reg tape_3x = 1'b1;
+always @(posedge clk_sys) if (~tape_playing) tape_3x <= ~tape_normal;
+wire tape_turbo = tape_playing & tape_3x;
 
 core u_core(
   .RESETn      ( RESETn      ),
@@ -279,6 +287,8 @@ core u_core(
   // tape
   .cin         ( cin         ),
   .motor       ( motor       ),
+  .tape_turbo  ( tape_turbo  ),
+  .turbo_on    ( turbo_on    ),
   .bootrom_sel ( bootrom_sel ),
   .machine_av  ( machine_av  ),
   // floppy, two drive slots
@@ -329,9 +339,7 @@ pcm pcm(
 // FM-7_MiSTer.sv drives only bit 7 of each channel and leaves the rest
 // undriven. Replicating the bit instead keeps screenshots at full scale
 // without changing which pixels are lit.
-assign VGA_R = machine_av ? rgb[23:16] : {8{grb[1]}};
-assign VGA_G = machine_av ? rgb[15:8]  : {8{grb[2]}};
-assign VGA_B = machine_av ? rgb[7:0]   : {8{grb[0]}};
+wire [23:0] machine_rgb = machine_av ? rgb : {{8{grb[1]}}, {8{grb[2]}}, {8{grb[0]}}};
 
 assign VGA_HS   = HSync;
 assign VGA_VS   = VSync;
@@ -398,6 +406,7 @@ wire [15:0] sdram_data;
 wire [24:0] sdram_addr;
 wire        need_more_byte;
 wire        sdram_ready;
+wire [31:0] tape_position;
 
 // index 1 == "F1,t77,Load Tape" in CONF_STR.
 wire tape_download = ioctl_download && (ioctl_index == 8'd1);
@@ -517,8 +526,33 @@ t77_decode u_t77_decode(
   .sdram_rd   ( need_more_byte ),
   .sout       ( cin            ),
   .rewind     ( rewind         ),
+  .fast       ( turbo_on       ),
   .image_size ( tape_size      ),
-  .eot        ( dbg_tape_eot   )
+  .eot        ( dbg_tape_eot   ),
+  .playing    ( tape_playing   ),
+  .position   ( tape_position  )
+);
+
+// The tape status bar, as FM-7_MiSTer.sv wires it. The OSD's "Tape overlay"
+// (status[21]) is not a harness input, so it is always on here; it only draws
+// while a tape plays, so no disk or BASIC screenshot can change.
+TAPEBAR u_tapebar(
+  .clk_sys    ( clk_sys                     ),
+  .dl         ( tape_download               ),
+  .dl_wr      ( ioctl_wr                    ),
+  .dl_addr    ( ioctl_addr                  ),
+  .dl_data    ( ioctl_dout                  ),
+  .loaded     ( (tape_size != 25'd0) & ~tape_download ),
+  .playing    ( tape_playing                ),
+  .fast       ( turbo_on                    ),
+  .position   ( tape_position               ),
+  .clk_video  ( clk_sys                     ),
+  .ce_pix     ( CE_PIXEL                    ),
+  .hblank     ( HBlank                      ),
+  .vblank     ( VBlank                      ),
+  .enable     ( 1'b1                        ),
+  .rgb_in     ( machine_rgb                 ),
+  .rgb_out    ( {VGA_R, VGA_G, VGA_B}       )
 );
 
 //////////////////////////////////////////////////////////////////
@@ -652,7 +686,7 @@ assign dbg_wfd0dn = u_core.WFD0Dn;
 assign dbg_wfd0en = u_core.WFD0En;
 assign dbg_psg_bc = u_core.u_SOUND.ym_cmd[1:0];
 assign dbg_psg_addr = u_core.u_SOUND.ym_addr[3:0];
-assign dbg_psg_cen = u_core.u_SOUND.EN_CLK_1_2;
+assign dbg_psg_cen = u_core.u_SOUND.YM_CEN;
 assign dbg_dac_a = { 4'b0000, u_core.u_SOUND.psg_A };
 assign dbg_dac_b = { 4'b0000, u_core.u_SOUND.psg_B };
 assign dbg_dac_c = { 4'b0000, u_core.u_SOUND.psg_C };

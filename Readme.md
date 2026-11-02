@@ -93,10 +93,8 @@ disk does — so do *not* reset afterwards, or you will restart the game.
 independent. On an ordinary single-disk file the selector does nothing: only
 `1` is there.
 
-One limit worth knowing before you go hunting for a fault: only the disks lying
-in the **first 1 MB** of the file can be reached. Past that the selector clamps
-to the last one it can get to, so the later disks of a large container are out
-of reach for now.
+The selector reaches the first eight disks of a container. Asking for one past
+the end leaves you on the last disk that exists.
 
 ### A tape
 
@@ -104,10 +102,17 @@ of reach for now.
 2. Type `run""` and press Enter.
 3. Wait: `Searching`, then `Found: NAME`, then the program starts.
 
-Tapes load at the speed cassettes really ran — a couple of minutes for a small
-title, closer to six for a big one. **Tape Audio** lets you hear it working,
-and **Tape Rewind** puts you back at the start, which you need before loading
-anything a second time.
+Tapes load three times faster than a real cassette: while the tape plays, the
+main CPU and the tape both run at 3x, and the moment the motor stops the
+machine is back at normal speed. **Tape speed** set to **Normal** loads at the
+speed cassettes really ran — a couple of minutes for a small title, closer to
+six for a big one. An FM77AV running with its MMR on always loads at normal
+speed: its CPU clock there has no clean 3x. While the tape plays, a status bar
+in the bottom-left corner shows the time played, the tape's length and a
+progress bar, with `x3` while turbo is on; it disappears when the motor stops,
+and **Tape overlay** turns it off.
+**Tape Audio** lets you hear it working, and **Tape Rewind** puts you back at
+the start, which you need before loading anything a second time.
 
 Some tapes hold a machine-code program rather than a BASIC one; those want
 
@@ -129,6 +134,8 @@ Alexandria's, for instance, end in `-loadm`.
 | **Disk 1 / 2 image** | pick which disk inside a multi-disk container file |
 | **Tape Rewind** | rewind the cassette to the start |
 | **Tape Audio** | hear the tape while it loads |
+| **Tape speed** | 3x (default) or Normal; takes effect the next time the motor starts |
+| **Tape overlay** | the time and progress bar shown while the tape plays |
 | **Boot ROM** | `0 disk` boots floppies, `2 dos-a` boots OS-9 |
 | **Machine** | FM-7, or FM77AV |
 | **System ROM** | Japanese or Spanish system ROMs — see below |
@@ -215,8 +222,6 @@ You can build your own ROM sets for other variants; the file format is in
 ## Known limitations
 
 * **2DD floppies are not supported** — 2D only
-* Multi-disk containers can only reach disks in the **first 1 MB** of the file;
-  beyond that the selector clamps to the last reachable disk
 * **The FM77AV side is younger than the FM-7 side.** 68 AV titles have been
   swept against a reference emulator — 30 match it and the rest are blank on the
   reference too — against 395 disks checked on the FM-7 side. That sweep samples
@@ -229,9 +234,10 @@ You can build your own ROM sets for other variants; the file format is in
   for about twenty seconds, then a `START / CONTINUE / JOYSTICK NORMAL` menu
   that answers a **pad button** — no key on the keyboard starts it. If a title
   looks stuck on a menu, try the pad before reporting it
-* One tape, **Crash Ball**, reports `Device I/O Error` after finding its header
-* **Xanadu Scenario II disk D** does not load
-* PSG pitch is about **0.4 of a semitone flat**, from an integer clock divider
+* **3x tape loading has been tried on BASIC `run""` tapes and four `loadm`
+  tapes** (Killer Station, Biotek, Kinasai!, Hitsuji Yaai). A tape with its
+  own loader may time its bits in a way 3x upsets; if a tape fails, set
+  **Tape speed** to **Normal** and try again, and please report it
 * **The FM/PSG balance has been listened to, not measured.** The FM77AV's FM
   half used to sit about 18 dB under the PSG, so a tune came out as drums over
   a barely audible melody. It now follows the balance jt12 itself intends, and

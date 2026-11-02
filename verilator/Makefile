@@ -347,6 +347,7 @@ V_SRC = \
 	$(RTL)/SRAM.v \
 	$(RTL)/SUBCRTADDR.v \
 	$(RTL)/t77_decode.v \
+	$(RTL)/TAPEBAR.sv \
 	$(RTL)/TIMER.v \
 	$(RTL)/x74138.v \
 	$(RTL)/x74139.v \
@@ -478,6 +479,17 @@ avkeyboard-test: avkeyboard_tb.sv ../rtl/AVKEYBOARD.v
 
 # Directed check for the FM-7 key tables, the $FD01 hold and reset, and the
 # auto-repeat timer. About two simulated seconds, so it takes a little while.
+tapebar-test: tapebar_tb.sv ../rtl/TAPEBAR.sv
+	verilator --binary --timing -Wno-fatal --Mdir /tmp/fm7-tapebar-obj \
+		--top-module tapebar_tb tapebar_tb.sv ../rtl/TAPEBAR.sv
+	/tmp/fm7-tapebar-obj/Vtapebar_tb
+
+clkturbo-test: clkturbo_tb.sv ../rtl/CLKCTRL.v ../rtl/clk_en.v ../rtl/clocks.svh
+	verilator --binary --timing -Wno-fatal --Mdir /tmp/fm7-clkturbo-obj \
+		--top-module clkturbo_tb clkturbo_tb.sv ../rtl/clocks.svh \
+		../rtl/clk_en.v ../rtl/CLKCTRL.v
+	/tmp/fm7-clkturbo-obj/Vclkturbo_tb
+
 joykeys-test: joykeys_tb.sv ../rtl/JOYKEYS.v
 	verilator --binary --timing -Wno-fatal --Mdir /tmp/fm7-joykeys-obj \
 		--top-module joykeys_tb joykeys_tb.sv ../rtl/JOYKEYS.v
@@ -521,7 +533,7 @@ avpixel-test: avpixel_tb.sv ../rtl/AVPIXEL.v
 av-boot-test: all av_boot_test.sh
 	bash av_boot_test.sh
 
-.PHONY: all run test clean clean-shots avmem-test crtram-test avkeyboard-test keyboard-test joykeys-test smem-test mb60h010-test pal-test avpixel-test avhdraw-test sound-test kanji-test av-boot-test
+.PHONY: all run test clean clean-shots avmem-test crtram-test avkeyboard-test keyboard-test joykeys-test tapebar-test clkturbo-test smem-test mb60h010-test pal-test avpixel-test avhdraw-test sound-test kanji-test av-boot-test
 
 # Disassembler self-check. Standalone -- no Verilator, no core.
 distest: dis6809_test.cpp dis6809.cpp dis6809.h

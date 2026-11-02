@@ -67,11 +67,18 @@ reg [7:0] SRH [0:1];
 // $D430 b2 selects the UNMASKED offset: 77AVEMU swaps VRAMOffsetMask between
 // 0xffff and 0xffe0 (fm77avcrtc.cpp:271-282), so with the bit set the low 5
 // bits of SRL are live and the screen scrolls a byte at a time instead of 32.
-// Woody Poco sets b2 in its first $D430 write and never clears it.
-wire [13:0] VOFFSET0 = AV_OFFSET_FINE ? { SRH[0][5:0], SRL[0][7:0] }
-                                      : { SRH[0][5:0], SRL[0][7:5], 5'd0 };
-wire [13:0] VOFFSET1 = AV_OFFSET_FINE ? { SRH[1][5:0], SRL[1][7:0] }
-                                      : { SRH[1][5:0], SRL[1][7:5], 5'd0 };
+//
+// The mask is applied WHEN $D40E/$D40F IS WRITTEN (fm77avcrtc.cpp:268,
+// `VRAMOffset &= VRAMOffsetMask`), not on every use -- see the latch below.
+// It used to be applied here, live, and that is wrong for any title that
+// clears b2 after setting a fine offset. Druaga writes $D430=$04, then the
+// offset ($25BF), then toggles $D430 between $20 and $00 every frame: live
+// masking snapped the offset back to $25A0 the moment b2 dropped, so the
+// display and every CPU VRAM access ran 31 bytes (248 pixels) off, and moving
+// left tore the playfield into a black band with the maze over the HUD.
+// Woody Poco sets b2 once and never clears it, which is why it never showed.
+wire [13:0] VOFFSET0 = { SRH[0][5:0], SRL[0][7:0] };
+wire [13:0] VOFFSET1 = { SRH[1][5:0], SRL[1][7:0] };
 wire [13:0] VOFFSET = AV_ACTIVE_PAGE ? VOFFSET1 : VOFFSET0;
 wire [13:0] DISPLAY_OFFSET = AV_DISPLAY_PAGE ? VOFFSET1 : VOFFSET0;
 assign VRAM_OFFSET = VOFFSET;
@@ -126,7 +133,11 @@ always @(posedge CLKSYS) begin
   else begin
     offset_lo_sr <= { offset_lo_sr[1:0], offset_lo_wrn };
     offset_hi_sr <= { offset_hi_sr[1:0], offset_hi_wrn };
-    if (offset_lo_sr[2] & ~offset_lo_sr[1]) SRL[AV_ACTIVE_PAGE] <= SREGDIN;
+    // Masked as it is stored, and only by the low-byte write: 77AVEMU's
+    // WriteD40F applies VRAMOffsetMask, WriteD40E does not (fm77avcrtc.cpp:
+    // 259-269). The mask cannot reach SRH -- it only clears bits 4:0.
+    if (offset_lo_sr[2] & ~offset_lo_sr[1])
+      SRL[AV_ACTIVE_PAGE] <= AV_OFFSET_FINE ? SREGDIN : { SREGDIN[7:5], 5'd0 };
     if (offset_hi_sr[2] & ~offset_hi_sr[1]) SRH[AV_ACTIVE_PAGE] <= SREGDIN;
   end
 end
