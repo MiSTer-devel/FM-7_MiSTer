@@ -37,7 +37,8 @@ module emu
 
 	// core options, mirroring the OSD status bits in FM-7_MiSTer.sv
 	input   [1:0] bootrom_sel,      // status[11:10] "BootROM" Basic/1/2/3
-	input         machine_av,       // status[12]    "Machine" FM77AV bring-up
+	input         machine_av,       // "Machine" FM77AV
+	input         machine_fm8,      // "Machine" FM-8 -- pages in ROM set 2
 	input         romset_sel,       // status[19]    "System ROM" set 0 / set 1
 	input         tape_rewind,      // status[8]     "Tape Rewind"
 	input         tape_audio,       // status[9]     "Tape Audio"
@@ -291,6 +292,7 @@ core u_core(
   .turbo_on    ( turbo_on    ),
   .bootrom_sel ( bootrom_sel ),
   .machine_av  ( machine_av  ),
+  .machine_fm8 ( machine_fm8 ),
   // floppy, two drive slots
   .img_mounted  ( img_mounted[1:0]  ),
   .img_readonly ( img_readonly    ),
@@ -451,13 +453,16 @@ always @(posedge clk_sys) begin
 end
 wire romset_valid = (romset_bytes >= 25'd45056);
 wire romset_has_1 = (romset_bytes >= 25'd110592);
+wire romset_has_2 = (romset_bytes >= 25'd176128);   // 2*65536 + 45056
 
 ROMLOAD #(.BASE(ROMSET_BASE)) u_romload(
   .CLKSYS       ( clk_sys      ),
   .RESETn       ( ~reset_all   ),
   .SET_VALID    ( romset_valid ),
   .SET_HAS_1    ( romset_has_1 ),
-  .SET_SEL      ( romset_sel   ),
+  .SET_HAS_2    ( romset_has_2 ),
+  .DL_ACTIVE    ( ioctl_download ),
+  .SET_SEL      ( machine_fm8 ? 2'd2 : {1'b0, romset_sel} ),
   .ROMSET_ADDR  ( romset_addr  ),
   .ROMSET_RD    ( romset_rd    ),
   .ROMSET_GNT   ( romset_gnt   ),
@@ -482,7 +487,7 @@ SDRAM_MUX u_sdram_mux(
   .CLKSYS      ( CLKSYS ),
   .DL_WR       ( ioctl_wr & (tape_download | kanji_download | romset_download) ),
   .DL_ADDR     ( kanji_download  ? (KANJI_BASE  + {8'd0, ioctl_addr[16:0]}) :
-                 romset_download ? (ROMSET_BASE + {8'd0, ioctl_addr[16:0]})
+                 romset_download ? (ROMSET_BASE + {6'd0, ioctl_addr[18:0]})
                                  : ioctl_addr ),
   .DL_DATA     ( ioctl_dout ),
   .TAPE_ADDR   ( sdram_addr ),

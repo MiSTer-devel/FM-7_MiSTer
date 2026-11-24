@@ -71,15 +71,18 @@ assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
 //   8         Tape Rewind (trigger)      rewind -> t77_decode
 //   9         Tape Audio                 cin_audio, relay_audio
 //   11:10     Boot ROM                   bootrom_sel -> ROMS.v M152 bank
-//   12        Machine family             machine_av -> AV memory/video/I/O
+//   12        RETIRED: was "Machine" FM-7/FM77AV. Do not reuse -- a saved
+//             .cfg from before FM-8 support still has it set.
 //   18:13     Disk 1 / Disk 2 sub-image  disk_index[0] / disk_index[1]
 //   19        System ROM set             romset_sel -> ROMLOAD
 //   20        Joypad keys                joykey_en -> JOYKEYS
 //   21        Tape overlay               TAPEBAR enable
 //   22        Tape speed                 tape_turbo -> CLKCTRL, t77_decode
+//   24:23     Machine                    machine_av / machine_fm8; FM-8 also
+//                                        forces ROMLOAD to set 2
 //   122:121   Aspect ratio               VIDEO_ARX / VIDEO_ARY
 //
-// Bits 1..7 and 23..120 are free. The hole at 1..7 is where the template's
+// Bits 1..7, 12 (retired) and 25..120 are free. The hole at 1..7 is where the template's
 // "TV Mode" (O[2]) and "Noise" (O[4:3]) demo options used to sit; they drove
 // nothing in this core and are gone. The hole is left as-is deliberately --
 // renumbering would only invalidate saved .cfg files for no gain.
@@ -104,12 +107,14 @@ localparam CONF_STR = {
   // drawn over the picture, never into the machine. See rtl/TAPEBAR.sv.
   "O[21],Tape overlay,On,Off;",
   "O[11:10],Boot ROM,0 disk,1 alt,2 dos-a,3 empty;",
-  "O[12],Machine,FM-7,FM77AV;",
+  // FM-8 needs set 2 of boot1.rom (docs/ROMSETS.md). Without it the machine
+  // is the FM-8's hardware running the FM-7's ROMs, which boots F-BASIC 3.0.
+  "O[24:23],Machine,FM-7,FM77AV,FM-8;",
   // Which system ROM set to page in from the uploaded boot1.rom. Does nothing
   // unless that file is present -- with no file the machine runs the ROMs
   // baked into the .rbf, which are set 0's. Changing this resets the machine:
   // swapping the BASIC ROM under a running interpreter is not a thing.
-  "O[19],System ROM,Japanese,Spanish;",
+  "O[19],System ROM (FM-7),Japanese,Spanish;",
   // Pad 1 as keys, for the many titles that never read the joystick port:
   // d-pad = keypad 1-9, letting go = keypad 5 (the FM-7's stop key). The PSG
   // joystick port keeps working either way. See rtl/JOYKEYS.v for the map.
@@ -133,7 +138,8 @@ wire  [10:0] ps2_key;
 // The AV selector is a machine-family bit, not a second boot-ROM choice.
 // FM77AV has a different memory map, video system, sub-I/O and sound device;
 // those must all see the same family selection.
-wire machine_av = status[12];
+wire machine_av  = (status[24:23] == 2'd1);
+wire machine_fm8 = (status[24:23] == 2'd2);
 
 wire        ioctl_download;
 wire [15:0] ioctl_index;
@@ -173,6 +179,15 @@ wire  [7:0] sd_buff_dout;
 wire  [7:0] sd_buff_din [2];
 wire        sd_buff_wr;
 
+// Machine was O[12] (FM-7/FM77AV) before the FM-8 made it three-way, and a
+// CFG saved by an older build still says FM77AV with bit 12 alone. Hand the
+// HPS a corrected status -- bit 12 clear, Machine = FM77AV -- so a saved AV
+// setting survives the upgrade. Re-asked every ~2 ms until the HPS applies it
+// (status[12] then reads 0); the board meanwhile boots as an FM-7 and the
+// Machine change resets it into the AV. Driven after clk_sys, below.
+reg        status_set = 1'b0;
+reg [15:0] status_mig_wait = 16'd0;
+wire [127:0] status_in = {status[127:25], 2'd1, status[22:13], 1'b0, status[11:0]};
 // WIDE must stay 0. hps_io sizes BOTH the ioctl download path and the floppy
 // sector buffer from it -- `DW = WIDE ? 15 : 7`, `AW = WIDE ? 12 : 13`. With
 // WIDE(1) the sector buffer becomes 16 bits wide and steps one address per
@@ -206,6 +221,8 @@ hps_io #(.CONF_STR(CONF_STR),.WIDE(0),.VDNUM(2)) hps_io
 
   .buttons(buttons),
   .status(status),
+  .status_in(status_in),
+  .status_set(status_set),
 
   .ps2_key(ps2_key),
 
@@ -253,14 +270,24 @@ pll pll
 // machine on every mid-game disk swap -- Ys (Disk A/B) and Mugen no Shinzou II
 // (Disk 1/2) both do that. Mount-then-boot belongs in the MGL instead, as a
 // <reset delay="1" hold="1"/> after the <file> element.
-reg machine_av_d = 1'b0;
+// The legacy-Machine migration declared above hps_io.
+always @(posedge clk_sys) begin
+  status_set <= 1'b0;
+  if (|status_mig_wait) status_mig_wait <= status_mig_wait - 16'd1;
+  else if (status[12]) begin
+    status_set      <= 1'b1;
+    status_mig_wait <= 16'hffff;
+  end
+end
+
+reg [1:0] machine_d = 2'd0;
 always @(posedge clk_sys)
-  machine_av_d <= machine_av;
+  machine_d <= status[24:23];
 
 // A family change is a board change. Hold reset long enough for every
 // clock-enable domain to observe it. core.v then releases the selected
 // machine's CPUs through their normal reset-vector path.
-wire machine_mode_changed = machine_av_d ^ machine_av;
+wire machine_mode_changed = (machine_d != status[24:23]);
 // boot1.rom, uploaded by the framework at core start. Main_MiSTer sends
 // boot<N>.rom with ioctl_index = (N << 6) -- see its user_io.cpp, "check for
 // multipart rom" -- so boot0.rom/boot.rom is index 0 (the kanji ROM, as
@@ -353,14 +380,18 @@ wire tape_turbo = tape_playing & tape_3x;
 // How much of it actually arrived. A set is 45056 bytes at a 64 KB stride, so
 // a file shorter than one set is not a set at all and must not be paged in --
 // that would write whatever else is in SDRAM over the working ROMs. Same test
-// one stride up decides whether set 1 exists; ROMLOAD falls back to set 0 when
-// it does not.
+// one and two strides up decides whether sets 1 and 2 exist; ROMLOAD falls
+// back to set 0 when the one asked for does not.
 reg [24:0] romset_bytes = 25'd0;
 always @(posedge clk_sys) begin
   if (romset_download && ioctl_wr) romset_bytes <= ioctl_addr + 25'd1;
 end
 wire romset_valid = (romset_bytes >= 25'd45056);
 wire romset_has_1 = (romset_bytes >= 25'd110592);   // 65536 + 45056
+wire romset_has_2 = (romset_bytes >= 25'd176128);   // 2*65536 + 45056
+// The FM-8 is a machine, not a ROM-set choice: selecting it pages in set 2
+// whatever the System ROM row says.
+wire [1:0] romset_sel = machine_fm8 ? 2'd2 : {1'b0, status[19]};
 
 wire ioctl_wait = (tape_download | kanji_download | romset_download) & ~sdram_ready;
 wire rewind = (old_ioctl_download & ~tape_download) | status[8];
@@ -434,6 +465,7 @@ core u_core(
   .turbo_on    ( turbo_on      ),
   .bootrom_sel ( status[11:10] ),
   .machine_av  ( machine_av    ),
+  .machine_fm8 ( machine_fm8   ),
   // floppy
   .img_mounted  ( img_mounted  ),
   .img_readonly ( img_readonly ),
@@ -495,10 +527,11 @@ TAPEBAR u_tapebar(
 // Based well clear of any tape image.
 localparam [24:0] KANJI_BASE = 25'h0400000;
 
-// The uploaded ROM sets, immediately above the 128 KB kanji ROM. Two 64 KB
-// sets is 128 KB, so $420000-$43FFFF. The tape image lives below $400000 and
-// SDRAM is 32 MB, so there are ~30 MB spare above this -- room for more sets
-// if another FM-7 licensee's ROMs ever turn up.
+// The uploaded ROM sets, immediately above the 128 KB kanji ROM, 64 KB each:
+// set 0 Japanese, set 1 Spanish, set 2 FM-8, so $420000-$44FFFF. The download
+// address below keeps 19 bits (8 sets). It kept 17 when there were two sets,
+// and a third then wrapped onto set 0 -- an FM-7 that booted FM-8 BASIC. The
+// tape image lives below $400000 and SDRAM is 32 MB.
 localparam [24:0] ROMSET_BASE = 25'h0420000;
 // boot.rom is ioctl index 0. Test the low byte, not [15:6]: the tape is
 // index 1 and [15:6]==0 matches everything from 0 to 63, which would send
@@ -516,7 +549,9 @@ ROMLOAD #(.BASE(ROMSET_BASE)) u_romload(
   .RESETn       ( ~reset       ),   // RAW reset: see the RESETn comment above
   .SET_VALID    ( romset_valid ),
   .SET_HAS_1    ( romset_has_1 ),
-  .SET_SEL      ( status[19]   ),
+  .SET_HAS_2    ( romset_has_2 ),
+  .DL_ACTIVE    ( ioctl_download ),
+  .SET_SEL      ( romset_sel   ),
   .ROMSET_ADDR  ( romset_addr  ),
   .ROMSET_RD    ( romset_rd    ),
   .ROMSET_GNT   ( romset_gnt   ),
@@ -535,7 +570,7 @@ SDRAM_MUX u_sdram_mux(
   .CLKSYS      ( CLKSYS ),
   .DL_WR       ( ioctl_wr & (tape_download | kanji_download | romset_download) ),
   .DL_ADDR     ( kanji_download  ? (KANJI_BASE  + {8'd0, ioctl_addr[16:0]}) :
-                 romset_download ? (ROMSET_BASE + {8'd0, ioctl_addr[16:0]})
+                 romset_download ? (ROMSET_BASE + {6'd0, ioctl_addr[18:0]})
                                  : ioctl_addr ),
   .DL_DATA     ( ioctl_dout ),
   .TAPE_ADDR   ( sdram_addr ),
