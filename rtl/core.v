@@ -900,8 +900,32 @@ PERIPHERAL u_PERIPHERAL(
 // SCPUCLK low freezes the core mid-cycle until blanking arrives, at which point
 // SVRADRS is its own address again and the access completes correctly.
 wire sub_vram_sel = ~(SDRAMBn & SDRAMGn & SDRAMRn);  // sub is addressing VRAM
-wire sub_vram_wait = sub_vram_sel & ~SCASSEL;        // ...while the raster owns it
-wire SCPUCLK_w = SCPUCLK & ~sub_vram_wait;
+// ...while the raster owns it, AND for one cycle after it hands the bus back.
+// VRAM is synchronous-read: q after edge n is the byte at the address held
+// during the cycle before. In the first cycle SCASSEL is high again, q still
+// carries the RASTER's byte and switches to the sub's at the very edge the
+// released clock rises on. Verilator always hands the CPU the new value; on
+// silicon the capture races the change, and which wins depends on placement.
+// When it loses, a VRAM read returns a raster byte -- PAINT then misses its
+// border and floods the screen (Elevator Game; a LINE/PAINT loop failed on 3
+// of 5 boots of one build, cleanly on others). Whether a boot's sub cycle lands
+// on that edge at all is fixed by where reset falls against the free-running
+// dividers, hence "per boot". Requiring SCASSEL high for two cycles means q
+// already holds the sub's byte, and keeps it, when the clock edge comes.
+reg SCASSEL_d = 1'b1;
+always @(posedge CLKSYS) SCASSEL_d <= SCASSEL;
+wire sub_vram_wait = sub_vram_sel & ~(SCASSEL & SCASSEL_d);
+// The gated clock is a REGISTER, not `SCPUCLK & ~sub_vram_wait`. mc6809s runs
+// entirely on `posedge CLK4`, and the AND's inputs move while SCPUCLK is high:
+// the sub drives a new address just after each rising edge (so the
+// sub_vram_sel decode settles then), and SCASSEL flips on every 8-pixel cell.
+// In Quartus any LUT glitch there is an extra rising edge on the sub CPU's
+// clock (REFERENCE.md section 3). One flop cannot glitch. Cost: every sub CPU
+// edge lands one CLKSYS (~21 ns) later. (Superseded claim: that this gate was
+// what made PAINT leak on hardware -- registering it alone left the leak on
+// most boots; the cause was the VRAM read race above.)
+reg SCPUCLK_w = 1'b0;
+always @(posedge CLKSYS) SCPUCLK_w <= SCPUCLK & ~sub_vram_wait;
 
 // FM77AV: $D430 bit 7 masks the sub CPU's 20 ms NMI (SMEM.v holds the latch).
 // The FM-7 has no $D430 and its NMI is unconditional, so this is gated on
