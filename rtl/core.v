@@ -37,6 +37,10 @@ module core(
   output buzzer,
   input [1:0] bootrom_sel,
   input machine_av,
+  // The FM-8: the FM-7's ancestor, run as the FM-7 board with the FM-8 ROM set
+  // and with the hardware the FM-8 did not have taken away. Never set together
+  // with machine_av. See the MDATABUS_in arms below for what it removes.
+  input machine_fm8,
 
   // Floppy: MiSTer block-device interface, straight through to FDC.v
   input  [1:0]  img_mounted,
@@ -431,7 +435,27 @@ assign rgb = AV_MODE_320 ? AV_ANALOG_RGB :
 wire AV_MMR_OFFPAGE = machine_av && AV_MMR_ENABLED &&
                       (MADDRBUS < 16'hfc00) && ~AV_FM7PAGE_SEL;
 
+// The FM-8's main I/O, per CSP's FM8_MAINIO (`fm8_mainio.cpp`), which is the
+// FM-7 page with things removed. These arms come first so they win.
+//   $fd00  keyboard bit 8 is not there: the FM-8 keyboard is wired to the SUB
+//          CPU only (MB8841 -> sub), the main sees nothing but BREAK
+//          (refs/haserin09/difference.html section 1). CSP get_port_fd00 is
+//          `0xfe | clock_fast`; fm8_switch is that clock bit.
+//   $fd01  $ff, for the same reason.
+//   $fd03  $ff: no timer, printer or keyboard interrupt (get_irqstat_fd03).
+//   $fd04  bit 2 reads 0 -- CSP get_fd04 ORs $78 on the FM-8, $7c on the FM-7.
+//   $fd0e  no PSG on a stock FM-8 (CSP's default sound_type 0, MAME's fm8_mem
+//          leaves $fd0d/$fd0e unmapped).
+//   $fd38-$fd3f  no digital palette: the colours are fixed and reads are $ff.
+// The write side of the same list is gated at the PAL, FLAGS and SOUND
+// instances, and the IRQ line at the main CPU.
 assign MDATABUS_in =
+  (machine_fm8 & ~RFD00n)          ? { 7'b1111111, fm8_switch } :
+  (machine_fm8 & ~RFD01n)          ? 8'hff :
+  (machine_fm8 & ~(IOSn | RFD03n)) ? 8'hff :
+  (machine_fm8 & ~(IOSn | RFD04n)) ? (TIMER_out & 8'hfb) :
+  (machine_fm8 & ~(IOSn | RFD0En)) ? 8'hff :
+  (machine_fm8 & ~PLTREGn)         ? 8'hff :
   ~(RFD00n & RFD01n) ? MKDATA :
   ~(IOSn | RFD02n) ? PERIPH_out :
   ~(IOSn | RFD03n) ? CLKCTRL_out :
@@ -507,11 +531,14 @@ assign SDATABUS_in =
   8'hff;
 
 CLKCTRL u_CLKCTRL(
-  // FM-7 mode. This picks the CPU clock (MCPUCLK = CLK4_9 = 4.9152 MHz, so
-  // E = 1.2288 MHz, the real FM-7 main CPU rate; 1'b0 selects SCLK1 and runs
-  // it at the FM-8's 2 MHz) and is reported on $FD00 bit 0, which the BIOS
-  // reads to choose between two different cassette routines.
-  .SW2          ( 1'b1         ), // 0 = FM-8 compatibility
+  // The FM-7's FM-8-compatibility DIP switch. 1 = normal: main E 2 MHz
+  // (SCLK1/4), sub 2 MHz. 0 = FM-8 speed: main E 1.2288 MHz (CLK4_9/4), sub
+  // 1 MHz -- both move, per the FM-7 manual (docs/FM77AV.md). It reads back
+  // on $FD00 bit 0, which the boot ROM uses to pick the FM-8 or FM-7 cassette
+  // routine. (Superseded comment here: "1'b0 runs it at the FM-8's 2 MHz".)
+  // The FM-8 machine is this switch at 0; CSP gives the FM-8 MAINCLOCK_SLOW /
+  // SUBCLOCK_SLOW (display.cpp: clock_fast is false only under _FM8).
+  .SW2          ( ~machine_fm8 ),
   .machine_av   ( machine_av      ),
   .mmr_enabled  ( AV_MMR_ENABLED  ),
   .CLKSYS       ( CLKSYS       ),
@@ -817,7 +844,10 @@ MCPU u_MCPU(
   .MCPUCLK      ( MCPUCLK      ),
   .GHn          ( GHn          ),
   .NMIn         ( NMIn         ),
-  .IRQn         ( IRQn         ),
+  // The FM-8 main CPU's IRQ comes only from the RS-232 card (CSP
+  // FM8_MAINIO::do_irq ORs txrdy/rxrdy/syndet and nothing else); none of the
+  // timer, keyboard, printer or FM sources reach it.
+  .IRQn         ( IRQn | machine_fm8 ),
   .FIRQn        ( FIRQn        ),
   .DMAn         ( DMAn         ),
   .CLKSYS       ( CLKSYS       ),
@@ -900,8 +930,32 @@ PERIPHERAL u_PERIPHERAL(
 // SCPUCLK low freezes the core mid-cycle until blanking arrives, at which point
 // SVRADRS is its own address again and the access completes correctly.
 wire sub_vram_sel = ~(SDRAMBn & SDRAMGn & SDRAMRn);  // sub is addressing VRAM
-wire sub_vram_wait = sub_vram_sel & ~SCASSEL;        // ...while the raster owns it
-wire SCPUCLK_w = SCPUCLK & ~sub_vram_wait;
+// ...while the raster owns it, AND for one cycle after it hands the bus back.
+// VRAM is synchronous-read: q after edge n is the byte at the address held
+// during the cycle before. In the first cycle SCASSEL is high again, q still
+// carries the RASTER's byte and switches to the sub's at the very edge the
+// released clock rises on. Verilator always hands the CPU the new value; on
+// silicon the capture races the change, and which wins depends on placement.
+// When it loses, a VRAM read returns a raster byte -- PAINT then misses its
+// border and floods the screen (Elevator Game; a LINE/PAINT loop failed on 3
+// of 5 boots of one build, cleanly on others). Whether a boot's sub cycle lands
+// on that edge at all is fixed by where reset falls against the free-running
+// dividers, hence "per boot". Requiring SCASSEL high for two cycles means q
+// already holds the sub's byte, and keeps it, when the clock edge comes.
+reg SCASSEL_d = 1'b1;
+always @(posedge CLKSYS) SCASSEL_d <= SCASSEL;
+wire sub_vram_wait = sub_vram_sel & ~(SCASSEL & SCASSEL_d);
+// The gated clock is a REGISTER, not `SCPUCLK & ~sub_vram_wait`. mc6809s runs
+// entirely on `posedge CLK4`, and the AND's inputs move while SCPUCLK is high:
+// the sub drives a new address just after each rising edge (so the
+// sub_vram_sel decode settles then), and SCASSEL flips on every 8-pixel cell.
+// In Quartus any LUT glitch there is an extra rising edge on the sub CPU's
+// clock (REFERENCE.md section 3). One flop cannot glitch. Cost: every sub CPU
+// edge lands one CLKSYS (~21 ns) later. (Superseded claim: that this gate was
+// what made PAINT leak on hardware -- registering it alone left the leak on
+// most boots; the cause was the VRAM read race above.)
+reg SCPUCLK_w = 1'b0;
+always @(posedge CLKSYS) SCPUCLK_w <= SCPUCLK & ~sub_vram_wait;
 
 // FM77AV: $D430 bit 7 masks the sub CPU's 20 ms NMI (SMEM.v holds the latch).
 // The FM-7 has no $D430 and its NMI is unconditional, so this is gated on
@@ -986,7 +1040,7 @@ FLAGS u_FLAGS(
   .SIRQCLRn    ( SIRQCLRn    ),
   .MDATABUS_in ( MDATABUS_out),
   .RESETBn     ( RESETBn     ),
-  .WFD37n      ( WFD37n      ),
+  .WFD37n      ( WFD37n | machine_fm8 ),   // FM-8: no multipage register
   .SRWBn       ( SRWBn       ),
   .SVDHALT     ( SVDHALT     ),
   .SVRACSn     ( SVRACSn     ),
@@ -1369,7 +1423,7 @@ PAL PAL(
   .MDATA    ( MDATABUS_out ),
   .PALDATA  ( PALDATA      ),
   .MADDRBUS ( MRAM_addr    ),
-  .PLTREGn  ( PLTREGn      ),
+  .PLTREGn  ( PLTREGn | machine_fm8 ),   // FM-8: fixed colours
   .AV_PALREGn ( AV_PALREGn ),
   .RDQEn    ( RDQEn        ),
   .WTQEn    ( WTQEn        ),
@@ -1436,8 +1490,8 @@ SOUND u_SOUND(
   .MDATABUS_in  ( MDATABUS_out ),
   .MDATABUS_out ( SOUND_dout   ),
   .RFD0En       ( RFD0En       ),
-  .WFD0En       ( WFD0En       ),
-  .WFD0Dn       ( WFD0Dn       ),
+  .WFD0En       ( WFD0En | machine_fm8 ),   // FM-8: no PSG
+  .WFD0Dn       ( WFD0Dn | machine_fm8 ),
   .RFD16n       ( RFD16n       ),
   .WFD16n       ( WFD16n       ),
   .WFD15n       ( WFD15n       ),

@@ -6,7 +6,8 @@ display and the keyboard. It ran one of the strongest Japanese games libraries
 of the early 80s, and almost none of it ever left Japan.
 
 This core also runs the **FM77AV**, the 1985 successor with 4096 colours, a
-hardware drawing engine and a YM2203.
+hardware drawing engine and a YM2203, and the **FM-8**, the 1981 machine the
+FM-7 grew out of.
 
 ![FM-7 keyboard map](docs/keyboard.svg)
 
@@ -24,6 +25,7 @@ hardware drawing engine and a YM2203.
 * **Joysticks**, two ports, two buttons each
 * **Kanji ROM**, the full 128 KB JIS set
 * **Spanish Secoinsa FM-7**, selectable at run time
+* **FM-8** — F-BASIC 1.0 and FM-8 cassettes (needs `boot1.rom`, see below)
 
 ## Installing
 
@@ -46,7 +48,8 @@ Installing by hand instead:
 > worth checking.
 
 `boot.rom` is the 128 KB kanji ROM. `boot1.rom` holds the system ROM sets and
-is only needed for the Spanish machine — see [System ROM sets](#spanish-secoinsa-fm-7).
+is only needed for the Spanish machine and the FM-8 — see
+[Spanish Secoinsa FM-7](#spanish-secoinsa-fm-7) and [FM-8](#fm-8).
 
 ## Getting started
 
@@ -137,8 +140,8 @@ Alexandria's, for instance, end in `-loadm`.
 | **Tape speed** | 3x (default) or Normal; takes effect the next time the motor starts |
 | **Tape overlay** | the time and progress bar shown while the tape plays |
 | **Boot ROM** | `0 disk` boots floppies, `2 dos-a` boots OS-9 |
-| **Machine** | FM-7, or FM77AV |
-| **System ROM** | Japanese or Spanish system ROMs — see below |
+| **Machine** | FM-7, FM77AV or FM-8 |
+| **System ROM (FM-7)** | Japanese or Spanish system ROMs — see below |
 | **Joypad keys** | play keyboard-only games on pad 1 — see [Joysticks](#joysticks) |
 | **Aspect ratio** | original 4:3, or fill the screen |
 
@@ -218,6 +221,32 @@ katakana would be.
 
 You can build your own ROM sets for other variants; the file format is in
 [docs/ROMSETS.md](docs/ROMSETS.md).
+
+## FM-8
+
+Set **Machine** to **FM-8**. It needs the FM-8's ROMs, which are the third set
+in `boot1.rom`. The `releases/boot1.rom` that the updater installs already has
+them. **That file needs this core or newer:** an older core boots the FM-8's
+BASIC when FM-7 is selected. To build it yourself from MAME's `fm8.zip`:
+
+```
+tools/make-romset.py -o boot1.rom \
+  --set fbasic300.rom,TL11_11_M152.rom.mem,subsys_m153.rom.mem,subsys_m154.rom.mem \
+  --set secoinsa_fbasic.rom,TL11_11_M152.rom.mem,secoinsa_cg.rom,subsys_m154.rom.mem \
+  --fm8 fm8.zip
+```
+
+Without them the FM-8 setting boots the FM-7's F-BASIC 3.0 on the FM-8's
+slower hardware, which is not what you want.
+
+The FM-8 is the FM-7 with less in it, and the core takes those parts away: the
+main CPU runs at 1.2 MHz, the keyboard talks only to the display CPU, there
+is no sound chip and no palette, and tapes load at normal speed only — there is
+no 3x on the FM-8's clock. `Ready` takes about four seconds to appear, because
+the boot ROM looks for a floppy first. Machine-code tapes want `LOADM"",,R`,
+BASIC ones `RUN""`.
+
+The FM-8 also had an optional bubble-memory cassette; that is not emulated.
 
 ## Known limitations
 

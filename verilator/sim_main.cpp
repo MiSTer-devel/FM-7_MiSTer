@@ -103,6 +103,11 @@ bool headless = false;
 static bool run_enable     = true;
 static int  stop_at_frame  = -1;
 static int  reset_at_frame = -1;
+// Extra clk_sys cycles of reset. The clk_en dividers free-run from
+// configuration while the raster and both CPUs restart at reset, so this moves
+// where the sub CPU's bus cycle falls against the raster's VRAM slots -- a
+// phase that differs per boot on hardware and is fixed in the sim.
+static int  reset_skew = 0;
 
 static std::vector<int> screenshot_frames;
 static std::string      screenshot_name_override;
@@ -110,7 +115,8 @@ static std::string      screenshot_prefix = "screenshot";
 static std::set<int>    screenshots_taken;
 
 static int  opt_bootrom    = 0;      // status[11:10]: 0 Basic, 1..3 DOS
-static bool opt_machine_av = false;  // status[12]: FM77AV bring-up selector
+static bool opt_machine_av = false;  // Machine = FM77AV
+static bool opt_machine_fm8 = false; // Machine = FM-8 (ROM set 2 of --romset)
 // status[19]: which system ROM set ROMLOAD pages in from the file given by
 // --romset. Ignored when no --romset is supplied, exactly as on hardware with
 // no boot1.rom on the card.
@@ -910,12 +916,17 @@ static void print_usage(const char* argv0) {
 	printf("  --disk-index <n>          Sub-disk of a multi-disk .d77/.d88 container\n");
 	printf("                            for drive 0, 0-based (default 0)\n");
 	printf("  --disk1-index <n>         Same for drive 1\n");
-	printf("  --machine <fm7|fm77av>   Select machine family\n");
+	printf("  --machine <fm7|fm77av|fm8> Select machine family. fm8 pages in\n");
+	printf("                            set 2 of --romset; without one it runs\n");
+	printf("                            the FM-7 ROMs on FM-8 hardware\n");
 	printf("\nRun control:\n");
 	printf("  --headless, --no-gui      No SDL window. Implied by HEADLESS=1.\n");
 	printf("  --stop-at-frame <n>       Exit after frame n. Required headless;\n");
 	printf("                            otherwise it stops at 100000.\n");
 	printf("  --reset-at-frame <n>      Pulse reset at frame n\n");
+	printf("  --reset-skew <n>          Hold reset n more clk_sys cycles: moves the CPUs\n");
+	printf("                            against the free-running dividers and the raster,\n");
+	printf("                            a phase that varies per boot on hardware\n");
 	printf("\nCapture:\n");
 	printf("  --screenshot <n[,n...]>   Save a PNG at each listed frame\n");
 	printf("  --screenshot-name <path>  Exact output path (single screenshot only)\n");
@@ -1034,14 +1045,16 @@ static int parse_args(int argc, char** argv) {
 		else if (a == "--disk1-index") { const char* v = next(); if (v) opt_disk_index[1] = atoi(v) & 7; }
 		else if (a == "--machine") {
 			const char* v = next();
-			if (v && (!strcmp(v, "fm77av") || !strcmp(v, "FM77AV"))) opt_machine_av = true;
-			else if (v && (!strcmp(v, "fm7") || !strcmp(v, "FM-7"))) opt_machine_av = false;
-			else printf("Error: --machine needs fm7 or fm77av\n");
+			if (v && (!strcmp(v, "fm77av") || !strcmp(v, "FM77AV"))) { opt_machine_av = true; opt_machine_fm8 = false; }
+			else if (v && (!strcmp(v, "fm7") || !strcmp(v, "FM-7"))) { opt_machine_av = false; opt_machine_fm8 = false; }
+			else if (v && (!strcmp(v, "fm8") || !strcmp(v, "FM-8"))) { opt_machine_av = false; opt_machine_fm8 = true; }
+			else printf("Error: --machine needs fm7, fm77av or fm8\n");
 		}
 		else if (a == "--key-hold")        { const char* v = next(); if (v) key_hold_frames = atoi(v); }
 		else if (a == "--key-typematic")   { const char* v = next(); if (v && sscanf(v, "%d:%d", &key_typematic_delay, &key_typematic_interval) != 2) printf("Error: --key-typematic needs <delay>:<interval> in frames\n"); }
 		else if (a == "--stop-at-frame")   { const char* v = next(); if (v) stop_at_frame = atoi(v); }
 		else if (a == "--reset-at-frame")  { const char* v = next(); if (v) reset_at_frame = atoi(v); }
+		else if (a == "--reset-skew")      { const char* v = next(); if (v) reset_skew = atoi(v); }
 		else if (a == "--rewind-at-frame") { const char* v = next(); if (v) tape_rewind_frame = atoi(v); }
 		else if (a == "--pc-profile")      pc_profile = true;
 		else if (a == "--pc-profile-sub")  { pc_profile = true; pc_profile_sub = true; }
@@ -1513,7 +1526,7 @@ static void apply_frame_actions(int frame) {
 	top->joystick_1 = joy_state[1];
 	if (reset_at_frame == frame) {
 		console.AddLog("frame %d: reset", frame);
-		reset_hold = 20000;
+		reset_hold = 20000 + reset_skew;
 	}
 	if (tape_rewind_frame == frame) {
 		console.AddLog("frame %d: tape rewind", frame);
@@ -1538,6 +1551,7 @@ static void sim_cycle() {
 	top->disk_index0 = opt_disk_index[0];
 	top->disk_index1 = opt_disk_index[1];
 	top->machine_av  = opt_machine_av;
+	top->machine_fm8 = opt_machine_fm8;
 	top->romset_sel  = opt_romset_sel;
 	top->tape_audio  = opt_tape_audio;
 	top->tape_normal = opt_tape_normal;
@@ -1952,7 +1966,7 @@ static void draw_state_window() {
 	ImGui::Separator();
 	ImGui::Checkbox("run", &run_enable);
 	ImGui::SameLine();
-	if (ImGui::Button("reset")) reset_hold = 20000;
+	if (ImGui::Button("reset")) reset_hold = 20000 + reset_skew;
 	ImGui::SameLine();
 	if (ImGui::Button("screenshot")) save_screenshot(video.count_frame);
 	ImGui::Checkbox("tape audio", &opt_tape_audio);
@@ -1984,6 +1998,8 @@ int main(int argc, char** argv, char** env) {
 	top = new Vemu();
 	if (opt_machine_av)
 		printf("Machine family: FM77AV\n");
+	if (opt_machine_fm8)
+		printf("Machine family: FM-8%s\n", romset_path.empty() ? " (no --romset: FM-7 ROMs)" : "");
 
 #if VM_TRACE_VCD
 	if (!vcd_path.empty()) {
@@ -2067,7 +2083,7 @@ int main(int argc, char** argv, char** env) {
 		if (f) {
 			fclose(f);
 			printf("Loading ROM set over ioctl index 64: %s (set %d)\n",
-			       romset_path.c_str(), opt_romset_sel ? 1 : 0);
+			       romset_path.c_str(), opt_machine_fm8 ? 2 : opt_romset_sel ? 1 : 0);
 			bus.QueueDownload(romset_path, 64, true);
 		} else {
 			printf("Error: cannot open romset %s\n", romset_path.c_str());
@@ -2090,7 +2106,7 @@ int main(int argc, char** argv, char** env) {
 	input.keyEventWait = 4000;
 
 	reset_prologue = 64;
-	reset_hold = 20000;
+	reset_hold = 20000 + reset_skew;
 
 	if (headless) {
 		// SimVideo::Initialise allocates the framebuffer as part of GL setup,

@@ -22,7 +22,8 @@ existing install changes.
 ## Layout
 
 Each set is 45056 bytes at a **65536-byte stride**. Set 0 is selected by the
-`System ROM` OSD row's first entry, set 1 by its second.
+`System ROM` OSD row's first entry, set 1 by its second, and **set 2 by
+`Machine` = FM-8**, whatever `System ROM` says.
 
 | offset | size | ROM | what |
 |---|---|---|---|
@@ -43,6 +44,9 @@ tools/make-romset.py -o releases/boot1.rom \
   --set secoinsa_fbasic.rom,TL11_11_M152.rom.mem,secoinsa_cg.rom,subsys_m154.rom.mem
 ```
 
+For the FM-8, add `--fm8 fm8.zip` (MAME's set) after the two `--set`
+arguments; see [The FM-8](#the-fm-8) for what it does to the files.
+
 Paths resolve against `rtl/roms/`; raw binaries and `$readmemh` `.mem` text are
 both accepted, because some of these ROMs only exist in the repo as `.mem`.
 
@@ -53,8 +57,20 @@ the machine is held in reset, then releases it. Changing the OSD row resets the
 machine — swapping the BASIC ROM under a running interpreter is not a thing.
 
 A file too short to hold a full set is ignored entirely (the baked ROMs stay);
-a file holding only set 0 makes the set-1 selection fall back to set 0 rather
-than page in whatever else is in SDRAM.
+a file without set 1 or set 2 makes that selection fall back to set 0 rather
+than page in whatever else is in SDRAM. So an FM-8 with a two-set file is the
+FM-8's hardware running the FM-7's ROMs: it boots F-BASIC 3.0.
+
+**The reverse is not safe: a three-set file breaks every core before the
+FM-8 build.** Those cores keep 17 bits of the download address, so set 2
+lands on set 0 and the FM-7 boots *FUJITSU MICRO 8 BASIC* (seen on hardware
+with `FM-7_20261102.rbf`). A three-set `boot1.rom` must only ever ship
+alongside a core that has the FM-8.
+
+The loader holds off while any other ioctl download is writing SDRAM (a tape
+mounted by an MGL at core start, for one). `sdram.sv` has a single pending
+slot, and a write that lands while a ROMLOAD read is pending drops the read
+and hands the loader the write's `ready` instead -- a garbage byte in the ROM.
 
 **Why SDRAM and not a second set of block RAMs.** `m151` is 32768 deep and
 costs 32 M10K blocks on its own; a duplicate plus a duplicate character
@@ -100,3 +116,29 @@ wired to anything pending an answer from whoever dumped these.
 
 **Not addressed:** the Secoinsa had a Spanish keyboard. This core's keyboard is
 JIS-positional by decision (see `TODO.md`), and a ROM set does not change that.
+
+## The FM-8
+
+Set 2. Built from MAME's `fm8.zip` by `--fm8`; the four files map like this:
+
+| MAME file | size | goes to |
+|---|---|---|
+| `fbasic10.rom` | 31744 | `m151`, F-BASIC 1.0 |
+| `bootbas8.rom` | 512 | `m152` bank 0 (BASIC) |
+| `bootdos8.rom` | 512 | `m152` bank 2 (5" DOS) |
+| `subsys_8.rom` | 10240 | first 2 KB `m153` (font), the rest `m154` (sub monitor) |
+
+- **The boot ROM layout is the real chip's.** The FM-8's SM11-14 is one
+  2 KB part: BASIC / 32 KB bubble / 5" DOS / debug, 512 bytes each
+  (`refs/haserin09/difference.html` §7.1). Only banks 0 and 2 were dumped, so
+  1 and 3 are `$FF`, and `Boot ROM` = `0` and `2` are the useful settings.
+- **Both boot dumps end in `$FF $FF` where the reset vector belongs.** The
+  builder writes `$FE00` at offset `$1FE` of every bank, as CSP does on load
+  (`mainmem_utils.cpp`, the `p[0x1fe] = 0xfe` loop).
+- **The font is the FM-7's less two glyphs** -- 2039 of 2048 bytes agree
+  (difference.html §4.1: the FM-7 widened two arcs by a dot).
+- **The sub monitor is a different program** (165 of 8192 bytes agree) but it
+  touches exactly the FM-7's sub-side registers: `$D400 $D402-$D404
+  $D408-$D40A $D40D $D40E`.
+- MAME marks `fbasic10.rom` and `subsys_8.rom` `BAD_DUMP`. Both boot and run
+  software in CSP and in this core; nothing found so far says they are wrong.

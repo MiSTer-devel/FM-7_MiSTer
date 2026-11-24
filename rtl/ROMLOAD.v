@@ -38,7 +38,9 @@ module ROMLOAD #(
 
   input             SET_VALID,       // a ROM set of at least one full set arrived
   input             SET_HAS_1,       // ...and it is long enough to hold set 1
-  input             SET_SEL,         // 0 = set 0, 1 = set 1
+  input             SET_HAS_2,       // ...and set 2 (the FM-8's)
+  input       [1:0] SET_SEL,         // which set; 3 is treated as 0
+  input             DL_ACTIVE,       // any ioctl download (writes SDRAM)
 
   // SDRAM client, same handshake as KANJI.v: assert RD, wait GNT, wait READY.
   output     [24:0] ROMSET_ADDR,
@@ -73,24 +75,45 @@ localparam ST_IDLE = 2'd0, ST_REQ = 2'd1, ST_WAIT = 2'd2;
 reg  [1:0]  st;
 reg  [16:0] idx;
 reg         loaded_valid;   // a set has been paged in since reset
-reg         loaded_sel;     // which one
+reg  [1:0]  loaded_sel;     // which one
 
-// Fall back to set 0 if set 1 was asked for but the file is too short to hold
-// it. Loading past the end of the file would page in whatever else is in
+// Fall back to set 0 if set 1 or 2 was asked for but the file is too short to
+// hold it. Loading past the end of the file would page in whatever else is in
 // SDRAM, which is a far worse failure than quietly giving the user set 0.
-wire eff_sel  = (SET_SEL & SET_HAS_1);
+wire [1:0] eff_sel = (SET_SEL == 2'd1 && SET_HAS_1) ? 2'd1 :
+                     (SET_SEL == 2'd2 && SET_HAS_2) ? 2'd2 : 2'd0;
 wire need_load = SET_VALID & (~loaded_valid | (loaded_sel != eff_sel));
 
 assign BUSY        = need_load | (st != ST_IDLE);
-assign ROMSET_ADDR = BASE + (eff_sel ? STRIDE : 25'd0) + {8'd0, idx};
-assign ROMSET_RD   = (st == ST_REQ);
+assign ROMSET_ADDR = BASE + ((eff_sel == 2'd2) ? {STRIDE[23:0], 1'b0} :
+                             (eff_sel == 2'd1) ? STRIDE : 25'd0) + {8'd0, idx};
+// NO READ WHILE A DOWNLOAD IS WRITING SDRAM, and none for a while after.
+// sdram.sv takes requests on edges and has one pending slot: a download write
+// pending when this read's edge arrives wins STATE_IDLE and clears BOTH
+// pending flags, so the read is silently dropped, and the write's `ready` is
+// then credited to this module (SDRAM_MUX's owner is ROMSET) -- a garbage
+// byte paged into the ROM. Seen in the sim, where --tape is queued straight
+// after boot1.rom: an FM-8 with a tape mounted booted a sub CPU executing
+// VRAM at $0232. On hardware an MGL that mounts a tape at core start is the
+// same overlap. So: hold off while any download is active and for 63 cycles
+// after (the last write is still in sdram.sv's pipeline when ioctl_download
+// drops), and re-read a byte if a download began while its read was in flight.
+reg [5:0] dl_quiet = 6'd0;
+always @(posedge CLKSYS)
+  if (DL_ACTIVE) dl_quiet <= 6'd63;
+  else if (|dl_quiet) dl_quiet <= dl_quiet - 6'd1;
+wire dl_busy = DL_ACTIVE | (|dl_quiet);
+reg  tainted;
+
+assign ROMSET_RD   = (st == ST_REQ) & ~dl_busy;
 
 always @(posedge CLKSYS) begin
   if (!RESETn) begin
     st           <= ST_IDLE;
     idx          <= 17'd0;
     loaded_valid <= 1'b0;
-    loaded_sel   <= 1'b0;
+    loaded_sel   <= 2'd0;
+    tainted      <= 1'b0;
     LD_M151_WR   <= 1'b0;
     LD_M152_WR   <= 1'b0;
     LD_M153_WR   <= 1'b0;
@@ -110,10 +133,15 @@ always @(posedge CLKSYS) begin
         end
 
       ST_REQ:
-        if (ROMSET_GNT) st <= ST_WAIT;
+        if (ROMSET_GNT) begin
+          st      <= ST_WAIT;
+          tainted <= 1'b0;
+        end
 
       ST_WAIT:
-        if (ROMSET_READY) begin
+        if (dl_busy) tainted <= 1'b1;
+        else if (ROMSET_READY & tainted) st <= ST_REQ;   // same idx again
+        else if (ROMSET_READY) begin
           LD_DATA <= ROMSET_DATA[7:0];
           // Subtract the region base rather than slicing idx. Slicing only
           // works while every offset happens to be aligned to its region size,
