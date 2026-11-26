@@ -134,6 +134,7 @@ localparam CONF_STR = {
 wire   [1:0] buttons;
 wire [127:0] status;
 wire  [10:0] ps2_key;
+wire         kbd_caps;
 
 // The AV selector is a machine-family bit, not a second boot-ROM choice.
 // FM77AV has a different memory map, video system, sub-I/O and sound device;
@@ -225,6 +226,9 @@ hps_io #(.CONF_STR(CONF_STR),.WIDE(0),.VDNUM(2)) hps_io
   .status_set(status_set),
 
   .ps2_key(ps2_key),
+  // Caps Lock lamp = the FM-7's CAP lock (index 0 is Caps: hps_io.sv, UIO 'h1f).
+  .ps2_kbd_led_use(3'b001),
+  .ps2_kbd_led_status({2'b00, kbd_caps}),
 
   .img_mounted(img_mounted),
   .img_readonly(img_readonly),
@@ -438,6 +442,7 @@ core u_core(
   .grb         ( grb           ),
   .rgb         ( rgb           ),
   .ps2_key     ( ps2_key       ),
+  .kbd_caps    ( kbd_caps      ),
   .joystick_0  ( joy1[5:0]     ),
   .joystick_1  ( joy2[5:0]     ),
   .joykey_pad  ( joy1[11:0]    ),

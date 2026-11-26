@@ -518,6 +518,7 @@ static bool name_to_ps2(const std::string& n, KeyMap& out) {
 		{"SPACE",{0x29,false,false}}, {"RETURN",{0x5a,false,false}}, {"ENTER",{0x5a,false,false}},
 		{"TAB",{0x0d,false,false}},   {"BS",{0x66,false,false}},     {"BACKSPACE",{0x66,false,false}},
 		{"ESC",{0x76,false,false}},   {"CAPS",{0x58,false,false}},
+		{"RO",{0x13,false,false}},     // the JIS ro key, as Main_MiSTer sends it
 		{"UP",{0x75,true,false}},     {"DOWN",{0x72,true,false}},
 		{"LEFT",{0x6b,true,false}},   {"RIGHT",{0x74,true,false}},
 		{"HOME",{0x6c,true,false}},   {"INS",{0x70,true,false}},     {"DEL",{0x71,true,false}},
@@ -956,7 +957,7 @@ static void print_usage(const char* argv0) {
 	printf("                            it stays on until toggled off again.\n");
 	printf("                            Names: SPACE RETURN TAB BS ESC CAPS UP DOWN\n");
 	printf("                                   LEFT RIGHT HOME INS DEL CTRL SHIFT\n");
-	printf("                                   GRAPH KANA BREAK F1..F10\n");
+	printf("                                   GRAPH KANA BREAK RO F1..F10\n");
 	printf("  --key-hold <frames>       Frames to hold each key (default 6)\n");
 	printf("  --key-typematic <d>:<i>   While a key is held, resend its make code after\n");
 	printf("                            d frames, then every i frames (host typematic)\n");

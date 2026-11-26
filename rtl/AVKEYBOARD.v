@@ -73,7 +73,15 @@ module AVKEYBOARD(
   output reg [7:0] RPT_INTERVAL,
   // $00 picks the key code system, and the codes themselves are KEYBOARD.v's
   // job -- scan mode is the one titles switch to for key releases.
-  output [1:0] CODING
+  output [1:0] CODING,
+  // $02 set LED / $03 get LED. The FM77AV's CAP and KANA lamps are the lock
+  // states themselves, which live in KEYBOARD.v: $02 sets them and $03 reports
+  // them (77AVEMU fm77avkeyboard.cpp:570-600, CSP keyboard.cpp:740-774). This
+  // module used to keep a private copy that no key ever changed.
+  output reg       LED_STB,
+  output reg [1:0] LED_VAL,
+  input            CAPS,
+  input            KANA
 );
 
 wire io_window = machine_av && (SADDRBUS[15:8] == 8'hd4);
@@ -108,7 +116,6 @@ reg [7:0] command;
 reg [7:0] mode;
 // The $00 case accepts 0, 1 and 2 only, so two bits carry every value it holds.
 assign CODING = mode[1:0];
-reg [7:0] leds;
 reg [7:0] screen_mode;
 reg [7:0] brightness;
 reg       command_pending;
@@ -206,7 +213,8 @@ always @(posedge CLKSYS) begin
   if (~RESETBn) begin
     command           <= 8'd0;
     mode              <= 8'd0; // FM-7 coding at power-on
-    leds              <= 8'd0;
+    LED_STB           <= 1'b0;
+    LED_VAL           <= 2'd0;
     screen_mode       <= 8'd0; // computer only
     brightness        <= 8'd0;
     RPT_MODE_STB      <= 1'b0;
@@ -231,6 +239,7 @@ always @(posedge CLKSYS) begin
   else begin
     RPT_MODE_STB <= 1'b0;
     RPT_TIME_STB <= 1'b0;
+    LED_STB      <= 1'b0;
     if (acknowledge_timer != 13'd0)
       acknowledge_timer <= acknowledge_timer - 13'd1;
     if (data_timer != 13'd0)
@@ -263,7 +272,7 @@ always @(posedge CLKSYS) begin
         case (wr_data)
           8'h01: begin out_shift <= {mode,        48'd0}; out_count <= 3'd1;
                        command <= 8'd0; param_need <= 4'd0; end
-          8'h03: begin out_shift <= {leds,        48'd0}; out_count <= 3'd1;
+          8'h03: begin out_shift <= {6'd0, KANA, CAPS, 48'd0}; out_count <= 3'd1;
                        command <= 8'd0; param_need <= 4'd0; end
           8'h83: begin out_shift <= {screen_mode, 48'd0}; out_count <= 3'd1;
                        command <= 8'd0; param_need <= 4'd0; end
@@ -279,7 +288,10 @@ always @(posedge CLKSYS) begin
         param_need <= param_need_eff;
         case (command)
           8'h00: if (wr_data <= 8'd2) mode <= wr_data;
-          8'h02: if (wr_data <= 8'd3) leds <= wr_data;
+          8'h02: if (wr_data <= 8'd3) begin
+                   LED_VAL <= wr_data[1:0];
+                   LED_STB <= 1'b1;
+                 end
           // $04: 00 repeat on, 01 off, anything else ignored (XM7
           // key_set_repeat, VM_keyboard.c.txt:1602-1615; CSP keyboard.cpp:777-798).
           8'h04: if (wr_data < 8'd2) begin

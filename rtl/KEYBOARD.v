@@ -29,7 +29,14 @@ module KEYBOARD(
   input [7:0] RPT_INTERVAL,
   // FM77AV encoder $00 picks the key code system: 0 FM-7, 1 FM16beta, 2 scan.
   // Always 0 on an FM-7, whose encoder does not exist.
-  input [1:0] KEY_CODING
+  input [1:0] KEY_CODING,
+  // FM77AV encoder $02 set LED (00 CAP on, 01 CAP off, 02 KANA on, 03 KANA off)
+  // and $03 get LED (b0 CAP, b1 KANA), decoded in AVKEYBOARD.v. The lamps ARE
+  // the lock states, so the command sets the mode, not just a light.
+  input       LED_STB,
+  input [1:0] LED_VAL,
+  output      CAPS,
+  output      KANA
 );
 
 reg press_btn;
@@ -139,11 +146,20 @@ assign SKDATA =
 // read-and-write-in-the-same-comb-block loop.
 //
 //   alt left = GRAPH, alt right = KANA, ctrl left = CTRL, ctrl right = BREAK
-reg shift_h, ctrl_h, graph_h, kana_h, break_h;
+reg shift_h, ctrl_h, graph_h, kana_h, break_h, caps_h;
 always @(posedge CLKSYS) begin
   if (~RESETBn) begin
     shift_h <= 1'b0; ctrl_h <= 1'b0; graph_h <= 1'b0; kana_h <= 1'b0;
     break_h <= 1'b0;
+    // CAP starts OFF, so a letter types lower case until CAP is pressed: XM7
+    // `caps_flag = FALSE` (VM_keyboard.c.txt:1433), CSP `caps_pressed = false`
+    // (keyboard.cpp:611), 77AVEMU `state.CAPS=false` (fm77avkeyboard.cpp:210).
+    caps_h  <= 1'b0;
+  end
+  else if (LED_STB) begin
+    // 77AVEMU fm77avkeyboard.cpp:590-600, CSP keyboard.cpp:748-757.
+    if (LED_VAL[1]) kana_h <= ~LED_VAL[0];
+    else            caps_h <= ~LED_VAL[0];
   end
   else if (input_strobe) begin
     case (code)
@@ -157,6 +173,11 @@ always @(posedge CLKSYS) begin
       // across keystrokes until it is pressed again.
       9'h111: if (press_btn && !dup_press) kana_h <= ~kana_h;   // alt right -> KANA (lock)
       9'h114:         break_h <= press_btn;       // ctrl right -> BREAK
+      // CAP locks the same way. It used to be a key with no effect at all, so
+      // the only way to type a capital was SHIFT. XM7 does not toggle it in scan
+      // mode (keyboard_make, VM_keyboard.c.txt:2059-2064): there the key is just
+      // scan code $55 and the title keeps its own state.
+      9'h058: if (press_btn && !dup_press && KEY_CODING != 2'd2) caps_h <= ~caps_h;
     endcase
   end
 end
@@ -166,6 +187,8 @@ end
 // sets its break flag together (fm7.cpp:1183-1189); TIMER.v already ANDs
 // BREAKn into FIRQn and reports it, so wiring the key here is the whole fix.
 assign BREAKn = ~break_h;
+assign CAPS   = caps_h;
+assign KANA   = kana_h;
 
 // Table lookup: a pure function of the key event and the modifier state. NO_KEY
 // is not a code any table produces -- the PF keys are $101-$10a -- and means
@@ -192,9 +215,9 @@ always @* begin
     // Our codes are PS/2 sets, so each entry is translated through the same
     // PS/2 -> physical-key correspondence the unshifted table below already
     // establishes. Keys the FM-7 has and a PS/2 keyboard does not -- KANJI,
-    // the JIS \_ key next to right shift, CONVERT/NONCONVERT, and the keypad's
-    // '=' and ',' (phy $3d, $41) -- have no entry here, which is why some phy
-    // numbers are absent.
+    // CONVERT/NONCONVERT, and the keypad's '=' and ',' (phy $3d, $41) -- have
+    // no entry here, which is why some phy numbers are absent. (The JIS ろ
+    // key, phy $34, IS mapped: see its four PS/2 codes below.)
     //
     // The rest of the numeric keypad (phy $36-$47) IS mapped. PS/2 keypad
     // 8/4/6/2 send $75/$6b/$74/$72 -- the cursor keys' codes WITHOUT the E0
@@ -243,10 +266,13 @@ always @* begin
         // marks '@ [ ] ^ yen _' beside the letters (System Specifications 1.9.9
         // p.1-34): '^' ($5E) is RS, yen ($5C) is FS, and '-' ($2D) sends nothing.
         // XM7's ctrl_key_table, which CSP copies, puts both codes one key to the left,
-        // on '-' and '^'; the manual's drawing wins. ('_' is on the JIS ro key, which
-        // is not mapped.)
+        // on '-' and '^'; the manual's drawing wins. ('_' is the ro key, phy $34.)
         9'h55: begin { lk_P0, lk_kdata } = 9'h1e; end // ctrl-^ -> RS
         9'h5d: begin { lk_P0, lk_kdata } = 9'h1c; end // ctrl-yen -> FS
+        9'h013: begin { lk_P0, lk_kdata } = 9'h01f; end // ctrl-_ (ro key) -> US
+        9'h061: begin { lk_P0, lk_kdata } = 9'h01f; end // ctrl-_ (ro key) -> US
+        9'h051: begin { lk_P0, lk_kdata } = 9'h01f; end // ctrl-_ (ro key) -> US
+        9'h169: begin { lk_P0, lk_kdata } = 9'h01f; end // ctrl-_ (ro key) -> US
       endcase
     end
 
@@ -312,6 +338,10 @@ always @* begin
         9'h41: begin { lk_P0, lk_kdata } = 9'h087; end // ,
         9'h49: begin { lk_P0, lk_kdata } = 9'h088; end // .
         9'h4a: begin { lk_P0, lk_kdata } = 9'h097; end // /
+        9'h013: begin { lk_P0, lk_kdata } = 9'h0e0; end // _ (ro key) semigraphic, shifted too
+        9'h061: begin { lk_P0, lk_kdata } = 9'h0e0; end // _ (ro key) semigraphic, shifted too
+        9'h051: begin { lk_P0, lk_kdata } = 9'h0e0; end // _ (ro key) semigraphic, shifted too
+        9'h169: begin { lk_P0, lk_kdata } = 9'h0e0; end // _ (ro key) semigraphic, shifted too
         // The keypad keys are their own physical keys on an FM-7 (phy $36-$47)
         // and graph_key gives them their own semigraphics -- keypad '/' is $91,
         // not the main '/' key's $97. The unshifted table types the same
@@ -472,6 +502,10 @@ always @* begin
         9'h41: begin { lk_P0, lk_kdata } = 9'h0c8; end // , -> ne
         9'h49: begin { lk_P0, lk_kdata } = 9'h0d9; end // . -> ru
         9'h4a: begin { lk_P0, lk_kdata } = 9'h0d2; end // / -> me
+        9'h013: begin { lk_P0, lk_kdata } = 9'h0db; end // ro key -> ro (KANA+SHIFT has none)
+        9'h061: begin { lk_P0, lk_kdata } = 9'h0db; end // ro key -> ro (KANA+SHIFT has none)
+        9'h051: begin { lk_P0, lk_kdata } = 9'h0db; end // ro key -> ro (KANA+SHIFT has none)
+        9'h169: begin { lk_P0, lk_kdata } = 9'h0db; end // ro key -> ro (KANA+SHIFT has none)
         9'h14a: begin { lk_P0, lk_kdata } = 9'h02f; end // keypad / (phy $37) stays '/'
         9'h07c: begin { lk_P0, lk_kdata } = 9'h02a; end // keypad *
         9'h079: begin { lk_P0, lk_kdata } = 9'h02b; end // keypad +
@@ -566,6 +600,10 @@ always @* begin
         9'h41: begin { lk_P0, lk_kdata } = 9'h3c; end // , -> <
         9'h49: begin { lk_P0, lk_kdata } = 9'h3e; end // . -> >
         9'h4a: begin { lk_P0, lk_kdata } = 9'h3f; end // / -> ?
+        9'h013: begin { lk_P0, lk_kdata } = 9'h05f; end // ro key -> _
+        9'h061: begin { lk_P0, lk_kdata } = 9'h05f; end // ro key -> _
+        9'h051: begin { lk_P0, lk_kdata } = 9'h05f; end // ro key -> _
+        9'h169: begin { lk_P0, lk_kdata } = 9'h05f; end // ro key -> _
 
         9'h29: begin { lk_P0, lk_kdata } = 9'h20; end // spacebar
         9'h5a: begin { lk_P0, lk_kdata } = 9'h0d; end // enter
@@ -680,6 +718,15 @@ always @* begin
 	      9'h41: begin { lk_P0, lk_kdata } = 9'h2c; end // ,
 	      9'h49: begin { lk_P0, lk_kdata } = 9'h2e; end // .
 	      9'h04a: begin { lk_P0, lk_kdata } = 9'h2f; end // / (was '"'; " is shift-2)
+	      // The JIS ro key, phy $34: '"' unshifted, '_' shifted, in both XM7
+	      // (norm_key_table, VM_keyboard.c.txt) and CSP (standard_key,
+	      // keyboard_tables.h:116,221). PC keyboards mostly lack it, so it is
+	      // also on ISO's extra key and on End. Main_MiSTer sends a USB JIS ro
+	      // key as PS/2 $13 (input.cpp, KEY_RO), not set 2's $51.
+	      9'h013: begin { lk_P0, lk_kdata } = 9'h022; end // ro key -> "
+	      9'h061: begin { lk_P0, lk_kdata } = 9'h022; end // ro key -> "
+	      9'h051: begin { lk_P0, lk_kdata } = 9'h022; end // ro key -> "
+	      9'h169: begin { lk_P0, lk_kdata } = 9'h022; end // ro key -> "
 
 	      // Numeric keypad: the same codes as the main-keyboard digits and
 	      // punctuation (CSP standard_key, phy $36-$47). Dig Dug reads 8/4/6/2
@@ -721,6 +768,14 @@ always @* begin
 		  endcase
 	  end
 
+    // CAP swaps the case of the letters, and only of the letters, in the plain
+    // and SHIFT layers: CAP+SHIFT+A is 'a'. XM7 caps_key_table
+    // (VM_keyboard.c.txt:353) and CSP (keyboard.cpp:235-245) agree; neither
+    // applies it under CTRL, GRAPH or KANA.
+    if (caps_h && !ctrl_h && !graph_h && !kana_h && !lk_P0 &&
+        (((lk_kdata | 8'h20) >= 8'h61) && ((lk_kdata | 8'h20) <= 8'h7a)))
+      lk_kdata = lk_kdata ^ 8'h20;
+
 	end
 end
 
@@ -745,7 +800,7 @@ end
 //
 // $00 means "this key has no scan code", which is safe because phy numbering
 // starts at $01 -- 77AVEMU tests it the same way (`if(0!=AVKeyToScanCode[...])`).
-// The FM-7's DUP key, the JIS ro key and the keypad's '=' and ',' are the gaps:
+// The FM-7's DUP key and the keypad's '=' and ',' are the gaps:
 // no PS/2 key here produces them.
 reg [6:0] scan;
 always @* begin
@@ -802,6 +857,10 @@ always @* begin
       9'h041: begin scan = 7'h31; end // ,
       9'h049: begin scan = 7'h32; end // .
       9'h04a: begin scan = 7'h33; end // /
+      9'h013: begin scan = 7'h34; end // ro key
+      9'h061: begin scan = 7'h34; end // ro key
+      9'h051: begin scan = 7'h34; end // ro key
+      9'h169: begin scan = 7'h34; end // ro key
       9'h029: begin scan = 7'h35; end // SPACE
       9'h07c: begin scan = 7'h36; end // KP*
       9'h14a: begin scan = 7'h37; end // KP/
