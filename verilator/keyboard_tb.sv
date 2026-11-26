@@ -13,21 +13,25 @@ module keyboard_tb;
   reg        resetn = 1'b0;
   reg [10:0] ps2_key = 11'd0;
   reg        rfd00n = 1'b1, rfd01n = 1'b1;
+  reg        eb = 1'b0;               // E phase: a $FD01 read ending in it acknowledges
   reg        rpt_mode_stb = 1'b0, rpt_mode_on = 1'b1, rpt_time_stb = 1'b0;
   reg  [7:0] rpt_delay = 8'd0, rpt_interval = 8'd0;
   reg  [1:0] key_coding = 2'd0;   // FM77AV encoder $00: 0 FM-7, 2 scan codes
   wire [7:0] mkdata, skdata;
-  wire       kstroben, breakn, lpmaskn, tmmask, keyinn;
+  wire       kstroben, breakn, lpmaskn, tmmask, keyinn, caps, kana;
+  reg        led_stb = 1'b0;
+  reg  [1:0] led_val = 2'd0;
 
   KEYBOARD dut(
     .CLKSYS(clk), .RESETBn(resetn), .ps2_key(ps2_key), .MDATA_in(8'h00),
     .SKDATA(skdata), .MKDATA(mkdata), .KDATAn(1'b1), .KACKNGn(1'b1),
-    .RFD00n(rfd00n), .RFD01n(rfd01n), .EB(1'b0), .SEB(1'b0), .SCLK2(1'b0),
+    .RFD00n(rfd00n), .RFD01n(rfd01n), .EB(eb), .SEB(1'b0), .SCLK2(1'b0),
     .WFD02n(1'b1), .KSTROBEn(kstroben), .BREAKn(breakn), .fm8_switch(1'b1),
     .LPMASKn(lpmaskn), .TMMASK(tmmask), .KEYINn(keyinn),
     .RPT_MODE_STB(rpt_mode_stb), .RPT_MODE_ON(rpt_mode_on),
     .RPT_TIME_STB(rpt_time_stb), .RPT_DELAY(rpt_delay), .RPT_INTERVAL(rpt_interval),
-    .KEY_CODING(key_coding)
+    .KEY_CODING(key_coding), .LED_STB(led_stb), .LED_VAL(led_val),
+    .CAPS(caps), .KANA(kana)
   );
 
   // One count per code delivered, key press or repeat.
@@ -44,7 +48,8 @@ module keyboard_tb;
                    INS = 9'h170, DEL = 9'h171, HOME = 9'h16c, PGUP = 9'h17d,
                    PGDN = 9'h17a, UP = 9'h175, LEFT = 9'h16b, DOWN = 9'h172,
                    RIGHT = 9'h174, KEY_2 = 9'h01e, MINUS = 9'h04e, EQUALS = 9'h055,
-                   BACKSLASH = 9'h05d, KEY_A = 9'h01c, RETURN = 9'h05a, F1 = 9'h005;
+                   BACKSLASH = 9'h05d, KEY_A = 9'h01c, RETURN = 9'h05a, F1 = 9'h005,
+                   CAPSL = 9'h058, RO_MAIN = 9'h013, RO_ISO = 9'h061, END_K = 9'h169;
 
   task automatic ev(input [8:0] code, input press);
     begin
@@ -58,10 +63,17 @@ module keyboard_tb;
   endtask
 
   // { $FD00 b7, $FD01 }
+  // A $FD01 read in the E phase, as the CPU makes it, so it acknowledges the
+  // code and the keyboard may present the next one.
   task automatic read_fd(output [8:0] d);
     begin
-      @(negedge clk); rfd01n = 1'b0; #1 d[7:0] = mkdata; rfd01n = 1'b1;
-      #1 rfd00n = 1'b0; #1 d[8] = mkdata[7]; rfd00n = 1'b1;
+      @(negedge clk); rfd00n = 1'b0; #1 d[8] = mkdata[7]; rfd00n = 1'b1;
+      eb = 1'b1; rfd01n = 1'b0;
+      repeat (2) @(posedge clk);
+      #1 d[7:0] = mkdata;
+      @(negedge clk); rfd01n = 1'b1;
+      repeat (2) @(posedge clk);
+      @(negedge clk); eb = 1'b0;
     end
   endtask
 
@@ -178,6 +190,41 @@ module keyboard_tb;
     tap(KANA);                                   // and off
     expect_key(KEY_A, 9'h061, "a after KANA off");
 
+    // The JIS ro key, phy $34 (XM7 norm/ctrl/graph/kana tables, CSP
+    // keyboard_tables.h): it was not mapped at all. Main_MiSTer sends a USB JIS
+    // ro as $13; ISO's extra key and End carry it too.
+    expect_key(RO_MAIN, 9'h022, "ro (Main $13) = \"");
+    expect_key(RO_ISO,  9'h022, "ro (ISO $61) = \"");
+    expect_key(END_K,   9'h022, "ro (End) = \"");
+    ev(SHIFT, 1'b1); expect_key(RO_MAIN, 9'h05f, "SHIFT+ro = _"); ev(SHIFT, 1'b0);
+    ev(CTRL, 1'b1);  expect_key(RO_MAIN, 9'h01f, "CTRL+ro = US"); ev(CTRL, 1'b0);
+    ev(GRAPH, 1'b1); expect_key(RO_MAIN, 9'h0e0, "GRAPH+ro"); ev(GRAPH, 1'b0);
+    tap(KANA); expect_key(RO_MAIN, 9'h0db, "KANA+ro = ro"); tap(KANA);
+
+    // CAP locks and swaps the letters' case, in the plain and SHIFT layers only.
+    // It used to do nothing, so capitals needed SHIFT.
+    if (caps !== 1'b0) fail("CAP not off at power-on");
+    expect_silent(CAPSL, "CAP sends no code");
+    if (caps !== 1'b1) fail("CAP did not lock on");
+    expect_key(KEY_A, 9'h041, "CAP+a = A");
+    expect_key(KEY_2, 9'h032, "CAP+2 = 2 (letters only)");
+    ev(SHIFT, 1'b1); expect_key(KEY_A, 9'h061, "CAP+SHIFT+a = a"); ev(SHIFT, 1'b0);
+    ev(CTRL, 1'b1);  expect_key(KEY_A, 9'h001, "CAP+CTRL+A = SOH"); ev(CTRL, 1'b0);
+    tap(KANA); expect_key(KEY_A, 9'h0c1, "CAP+KANA+a = chi"); tap(KANA);
+    tap(CAPSL);
+    if (caps !== 1'b0) fail("CAP did not unlock");
+    expect_key(KEY_A, 9'h061, "a after CAP off");
+
+    // FM77AV encoder $02 sets the locks themselves: 00 CAP on, 01 off, 02 KANA on,
+    // 03 off (77AVEMU fm77avkeyboard.cpp:590).
+    @(negedge clk); led_val = 2'd0; led_stb = 1'b1; @(negedge clk); led_stb = 1'b0;
+    if (caps !== 1'b1) fail("encoder $02 00 did not set CAP");
+    @(negedge clk); led_val = 2'd2; led_stb = 1'b1; @(negedge clk); led_stb = 1'b0;
+    if (kana !== 1'b1) fail("encoder $02 02 did not set KANA");
+    @(negedge clk); led_val = 2'd3; led_stb = 1'b1; @(negedge clk); led_stb = 1'b0;
+    @(negedge clk); led_val = 2'd1; led_stb = 1'b1; @(negedge clk); led_stb = 1'b0;
+    if (caps !== 1'b0 || kana !== 1'b0) fail("encoder $02 01/03 did not clear CAP/KANA");
+
     // FM77AV scan code mode. A release reports, which the FM-7 code system
     // cannot do at all, and the modifier keys report as themselves.
     key_coding = 2'd2;
@@ -186,8 +233,38 @@ module keyboard_tb;
     expect_scan(9'h075, 7'h3b, "scan keypad 8");
     expect_scan(SHIFT, 7'h53, "scan SHIFT (a modifier reports)");
     expect_scan(CTRL,  7'h52, "scan CTRL");
+    expect_scan(RO_MAIN, 7'h34, "scan ro");
+    expect_scan(CAPSL, 7'h55, "scan CAP");
+    if (caps !== 1'b0) fail("CAP toggled in scan mode");
+
+    // Codes that arrive before the CPU has read the last one wait their turn,
+    // as 77AVEMU's keyCodeQueue (fm77avkeyboard.cpp:357-369) and CSP's key_fifo
+    // hold them. A d-pad turn under "Joypad keys" is a break and a make 1 ms
+    // apart; when the break was overwritten, the old direction stayed held in
+    // the game until it was pressed again.
+    ev(9'h075, 1'b1);          // keypad 8 down
+    ev(9'h075, 1'b0);          // up, before anything was read
+    ev(9'h074, 1'b1);          // keypad 6 down
+    read_fd(v); if (v !== 9'h03b) fail($sformatf("queued 1: %03x, want 03b (KP8 make)", v));
+    read_fd(v); if (v !== 9'h0bb) fail($sformatf("queued 2: %03x, want 0bb (KP8 break)", v));
+    read_fd(v); if (v !== 9'h040) fail($sformatf("queued 3: %03x, want 040 (KP6 make)", v));
+    if (dut.m132 !== 1'b0) fail("strobe still up with the queue empty");
+    read_fd(v); if (v !== 9'h040) fail($sformatf("queue drained: $FD01 %03x, want it to hold 040", v));
+    ev(9'h074, 1'b0);
+    read_fd(v); if (v !== 9'h0c0) fail($sformatf("KP6 break: %03x, want 0c0", v));
+    // Repeats of a held key do not stack up behind an unread code.
+    ev(KEY_A, 1'b1);
+    wait_ms(850);              // make, then repeats at 0.7 s and 0.77 s, none read
+    ev(KEY_A, 1'b0);
+    read_fd(v); if (v !== 9'h01e) fail($sformatf("held A: %03x, want 01e", v));
+    read_fd(v); if (v !== 9'h09e) fail($sformatf("held A, next: %03x, want 09e (no repeats queued)", v));
+    if (dut.m132 !== 1'b0) fail("repeats were queued");
     key_coding = 2'd0;
     expect_key(KEY_A, 9'h061, "a again once the coding is back to FM-7");
+    // The FM-7 code system is unchanged: an unread code is overwritten.
+    tap(KEY_A); tap(KEY_2);
+    read_fd(v); if (v !== 9'h032) fail($sformatf("FM-7 mode a then 2: %03x, want 032", v));
+    if (dut.m132 !== 1'b0) fail("FM-7 mode queued a code");
 
     // $FD01 keeps the last code after a release (FM-Techknow 5-1-5, p.118) --
     // expect_key reads it after the release -- but a reset puts back the

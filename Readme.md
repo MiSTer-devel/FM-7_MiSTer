@@ -170,10 +170,13 @@ And the special keys:
 | **Left Alt** | **GRAPH** — the semigraphics character set |
 | **Right Alt** | **KANA** — locking toggle for katakana |
 | **Right Ctrl** | **BREAK** — stops a running BASIC program |
+| **Caps Lock** | **CAP** — locking toggle for capitals; your Caps Lock lamp shows it |
+| **End** | the JIS **`"` `_` ろ** key left of right Shift, which PC keyboards lack. The ISO key left of left Shift and a Japanese keyboard's ろ key type it too. |
 | Page Up / Page Down | EL (erase line) / CLS |
 | F1–F10 | PF1–PF10 |
 
-Caps Lock does nothing. The numeric keypad types the same characters as the
+CAP starts off, as on the real machine, so letters type in lower case. Some
+games only accept capitals at a name prompt: press Caps Lock once. The numeric keypad types the same characters as the
 main keys, and keypad Enter is RETURN — which matters for games that steer on
 keypad 8/4/6/2, such as Dig Dug. The FM-7 keyboard never reports a key being
 released, so in games like that a tap sets the direction and the character keeps

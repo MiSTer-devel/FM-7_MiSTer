@@ -11,6 +11,8 @@ module core(
   output [2:0] grb,
   output [23:0] rgb,
   input [10:0] ps2_key,
+  // The CAP lock, for the PC keyboard's Caps Lock lamp.
+  output       kbd_caps,
   // Joysticks (MiSTer order: [0]=right [1]=left [2]=down [3]=up [4]=A [5]=B)
   input [5:0] joystick_0,
   input [5:0] joystick_1,
@@ -1103,6 +1105,9 @@ SDECODE u_SDECODE(
 wire       AV_RPT_MODE_STB, AV_RPT_MODE_ON, AV_RPT_TIME_STB;
 wire [7:0] AV_RPT_DELAY, AV_RPT_INTERVAL;
 wire [1:0] AV_CODING;
+wire       AV_LED_STB, KBD_CAPS, KBD_KANA;
+assign kbd_caps = KBD_CAPS;
+wire [1:0] AV_LED_VAL;
 
 AVKEYBOARD u_AVKEYBOARD(
   .CLKSYS     ( CLKSYS       ),
@@ -1131,7 +1136,11 @@ AVKEYBOARD u_AVKEYBOARD(
   .RPT_TIME_STB ( AV_RPT_TIME_STB ),
   .RPT_DELAY    ( AV_RPT_DELAY    ),
   .RPT_INTERVAL ( AV_RPT_INTERVAL ),
-  .CODING       ( AV_CODING       )
+  .CODING       ( AV_CODING       ),
+  .LED_STB      ( AV_LED_STB      ),
+  .LED_VAL      ( AV_LED_VAL      ),
+  .CAPS         ( KBD_CAPS        ),
+  .KANA         ( KBD_KANA        )
 );
 
 SMEM u_SMEM(
@@ -1472,7 +1481,11 @@ KEYBOARD KEYBOARD(
   .RPT_TIME_STB ( AV_RPT_TIME_STB ),
   .RPT_DELAY    ( AV_RPT_DELAY    ),
   .RPT_INTERVAL ( AV_RPT_INTERVAL ),
-  .KEY_CODING   ( AV_CODING       )
+  .KEY_CODING   ( AV_CODING       ),
+  .LED_STB      ( AV_LED_STB      ),
+  .LED_VAL      ( AV_LED_VAL      ),
+  .CAPS         ( KBD_CAPS        ),
+  .KANA         ( KBD_KANA        )
 );
 
 
