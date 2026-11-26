@@ -13,6 +13,7 @@ module keyboard_tb;
   reg        resetn = 1'b0;
   reg [10:0] ps2_key = 11'd0;
   reg        rfd00n = 1'b1, rfd01n = 1'b1;
+  reg        eb = 1'b0;               // E phase: a $FD01 read ending in it acknowledges
   reg        rpt_mode_stb = 1'b0, rpt_mode_on = 1'b1, rpt_time_stb = 1'b0;
   reg  [7:0] rpt_delay = 8'd0, rpt_interval = 8'd0;
   reg  [1:0] key_coding = 2'd0;   // FM77AV encoder $00: 0 FM-7, 2 scan codes
@@ -24,7 +25,7 @@ module keyboard_tb;
   KEYBOARD dut(
     .CLKSYS(clk), .RESETBn(resetn), .ps2_key(ps2_key), .MDATA_in(8'h00),
     .SKDATA(skdata), .MKDATA(mkdata), .KDATAn(1'b1), .KACKNGn(1'b1),
-    .RFD00n(rfd00n), .RFD01n(rfd01n), .EB(1'b0), .SEB(1'b0), .SCLK2(1'b0),
+    .RFD00n(rfd00n), .RFD01n(rfd01n), .EB(eb), .SEB(1'b0), .SCLK2(1'b0),
     .WFD02n(1'b1), .KSTROBEn(kstroben), .BREAKn(breakn), .fm8_switch(1'b1),
     .LPMASKn(lpmaskn), .TMMASK(tmmask), .KEYINn(keyinn),
     .RPT_MODE_STB(rpt_mode_stb), .RPT_MODE_ON(rpt_mode_on),
@@ -62,10 +63,17 @@ module keyboard_tb;
   endtask
 
   // { $FD00 b7, $FD01 }
+  // A $FD01 read in the E phase, as the CPU makes it, so it acknowledges the
+  // code and the keyboard may present the next one.
   task automatic read_fd(output [8:0] d);
     begin
-      @(negedge clk); rfd01n = 1'b0; #1 d[7:0] = mkdata; rfd01n = 1'b1;
-      #1 rfd00n = 1'b0; #1 d[8] = mkdata[7]; rfd00n = 1'b1;
+      @(negedge clk); rfd00n = 1'b0; #1 d[8] = mkdata[7]; rfd00n = 1'b1;
+      eb = 1'b1; rfd01n = 1'b0;
+      repeat (2) @(posedge clk);
+      #1 d[7:0] = mkdata;
+      @(negedge clk); rfd01n = 1'b1;
+      repeat (2) @(posedge clk);
+      @(negedge clk); eb = 1'b0;
     end
   endtask
 
@@ -228,8 +236,35 @@ module keyboard_tb;
     expect_scan(RO_MAIN, 7'h34, "scan ro");
     expect_scan(CAPSL, 7'h55, "scan CAP");
     if (caps !== 1'b0) fail("CAP toggled in scan mode");
+
+    // Codes that arrive before the CPU has read the last one wait their turn,
+    // as 77AVEMU's keyCodeQueue (fm77avkeyboard.cpp:357-369) and CSP's key_fifo
+    // hold them. A d-pad turn under "Joypad keys" is a break and a make 1 ms
+    // apart; when the break was overwritten, the old direction stayed held in
+    // the game until it was pressed again.
+    ev(9'h075, 1'b1);          // keypad 8 down
+    ev(9'h075, 1'b0);          // up, before anything was read
+    ev(9'h074, 1'b1);          // keypad 6 down
+    read_fd(v); if (v !== 9'h03b) fail($sformatf("queued 1: %03x, want 03b (KP8 make)", v));
+    read_fd(v); if (v !== 9'h0bb) fail($sformatf("queued 2: %03x, want 0bb (KP8 break)", v));
+    read_fd(v); if (v !== 9'h040) fail($sformatf("queued 3: %03x, want 040 (KP6 make)", v));
+    if (dut.m132 !== 1'b0) fail("strobe still up with the queue empty");
+    read_fd(v); if (v !== 9'h040) fail($sformatf("queue drained: $FD01 %03x, want it to hold 040", v));
+    ev(9'h074, 1'b0);
+    read_fd(v); if (v !== 9'h0c0) fail($sformatf("KP6 break: %03x, want 0c0", v));
+    // Repeats of a held key do not stack up behind an unread code.
+    ev(KEY_A, 1'b1);
+    wait_ms(850);              // make, then repeats at 0.7 s and 0.77 s, none read
+    ev(KEY_A, 1'b0);
+    read_fd(v); if (v !== 9'h01e) fail($sformatf("held A: %03x, want 01e", v));
+    read_fd(v); if (v !== 9'h09e) fail($sformatf("held A, next: %03x, want 09e (no repeats queued)", v));
+    if (dut.m132 !== 1'b0) fail("repeats were queued");
     key_coding = 2'd0;
     expect_key(KEY_A, 9'h061, "a again once the coding is back to FM-7");
+    // The FM-7 code system is unchanged: an unread code is overwritten.
+    tap(KEY_A); tap(KEY_2);
+    read_fd(v); if (v !== 9'h032) fail($sformatf("FM-7 mode a then 2: %03x, want 032", v));
+    if (dut.m132 !== 1'b0) fail("FM-7 mode queued a code");
 
     // $FD01 keeps the last code after a release (FM-Techknow 5-1-5, p.118) --
     // expect_key reads it after the release -- but a reset puts back the

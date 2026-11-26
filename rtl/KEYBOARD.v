@@ -1037,7 +1037,9 @@ wire is_shift    = (code == 9'h012) || (code == 9'h059);
 // from toggling KANA. It drops a make for the key that was already the last one
 // pressed until some key is released, as CSP's older_vk does (keyboard.cpp:346,
 // :252).
-reg        key_stb;
+reg        key_stb;                // a code is ready in ev_code
+reg        ev_rpt;                 // ... and it is an auto-repeat
+reg  [8:0] ev_code;                // { $FD00 b7, $FD01 }
 reg        rpt_en;                 // CTRL+SHIFT+0/1, encoder $04
 reg [11:0] rpt_delay_ms;           // 700, or up to 255 x 10 from encoder $05
 reg [11:0] rpt_int_ms;             // 70
@@ -1054,6 +1056,7 @@ wire       key_release = input_strobe & ~press_btn;
 
 always @(posedge CLKSYS) begin
   key_stb <= 1'b0;
+  ev_rpt  <= 1'b0;
   ms_div  <= ms_tick ? 16'd0 : ms_div + 16'd1;
   if (~RESETBn) begin
     // Back to the power-on value. The manuals do not say, but every reference
@@ -1064,7 +1067,6 @@ always @(posedge CLKSYS) begin
     // leave $FD01 holding the last key -- $0D after RETURN -- for a title that
     // reads it at boot. Bit 8 stays 0 as at power-on; XM7 and CSP set it, 77AVEMU
     // does not.
-    { P0, kdata } <= 9'h0ff;
     last_press_v <= 1'b0;
     rpt_en       <= 1'b1;
     rpt_delay_ms <= 12'd700;
@@ -1108,7 +1110,7 @@ always @(posedge CLKSYS) begin
       // it is nothing at all, and kdata keeps the last code: $FD01 holds. See
       // the declaration of kdata for why.
       if (scan_mode && scan_hit) begin
-        { P0, kdata } <= { 1'b0, 1'b1, scan };   // b7 set = break
+        ev_code       <= { 1'b0, 1'b1, scan };   // b7 set = break
         key_stb       <= 1'b1;
       end
       if (is_shift || (code == rpt_code)) begin
@@ -1130,7 +1132,7 @@ always @(posedge CLKSYS) begin
       else if (rpt_key_off) rpt_en <= 1'b0;
       else if (scan_mode) begin
         if (scan_hit) begin
-          { P0, kdata }         <= { 1'b0, 1'b0, scan };
+          ev_code               <= { 1'b0, 1'b0, scan };
           key_stb               <= 1'b1;
           rpt_code              <= code;
           { rpt_P0, rpt_kdata } <= { 1'b0, 1'b0, scan };
@@ -1141,7 +1143,7 @@ always @(posedge CLKSYS) begin
       end
       else if (is_modifier) ;
       else if (lk_hit) begin
-        { P0, kdata }         <= { lk_P0, lk_kdata };
+        ev_code               <= { lk_P0, lk_kdata };
         key_stb               <= 1'b1;
         rpt_code              <= code;
         { rpt_P0, rpt_kdata } <= { lk_P0, lk_kdata };
@@ -1152,8 +1154,9 @@ always @(posedge CLKSYS) begin
     end
     else if (rpt_pend) begin
       rpt_pend      <= 1'b0;
-      { P0, kdata } <= { rpt_P0, rpt_kdata };
+      ev_code       <= { rpt_P0, rpt_kdata };
       key_stb       <= 1'b1;
+      ev_rpt        <= 1'b1;
     end
   end
 end
@@ -1171,11 +1174,74 @@ always @(posedge CLKSYS) begin
   kack_d <= KACKNGn;
   if (rfd01_d & ~RFD01n) rfd01_ephase <= EB;
   if (kack_d & ~KACKNGn) kack_ephase <= SEB;
-  if (~RESETBn) m132 <= 1'b0;
-  else if (key_stb) m132 <= 1'b1;
-  else if ((~rfd01_d & RFD01n & rfd01_ephase) ||
-           (~kack_d & KACKNGn & kack_ephase))
+end
+
+// Delivery: ev_code into $FD01 and the strobe, through a queue in scan mode.
+//
+// A code that arrives while the last one is still unread used to overwrite it.
+// In the FM77AV scan-code mode that loses BREAKS, and a lost break is a key the
+// title believes is held until it is pressed again. "Joypad keys" made it
+// common: a d-pad turn is a break and a make 1 ms apart (JOYKEYS.v), and
+// Kugyokuden's d-pad stuck in the old direction now and then (Danjuro,
+// 2026-11-26, on hardware). Both references queue here: 77AVEMU pushes onto
+// keyCodeQueue whenever the key IRQ is still set (fm77avkeyboard.cpp:357-369)
+// and pops the next code on the read that acknowledges (ProcessKeyCodeInQueue,
+// called from fm77avio.cpp:657,742); CSP's key_fifo is 512 deep
+// (keyboard.cpp:1197).
+//
+// Scan mode only. The FM-7 code system sends no releases, so nothing it drops
+// can stick, and its overwrite is what every title tested so far ran against;
+// both references queue there too, but no title has shown a need. An
+// auto-repeat is dropped rather than queued while anything is waiting -- it is
+// the same code again, and stacking them behind a slow reader would replay a
+// held key after it was let go. A full queue drops the new code.
+localparam KQ_DEPTH = 16;
+reg  [8:0] kq [0:KQ_DEPTH-1];
+reg  [3:0] kq_rd, kq_wr;
+reg  [4:0] kq_n;
+wire       kbd_ack = (~rfd01_d & RFD01n & rfd01_ephase) ||
+                     (~kack_d & KACKNGn & kack_ephase);
+wire       kq_busy = (m132 & ~kbd_ack) | (kq_n != 5'd0);
+always @(posedge CLKSYS) begin
+  if (~RESETBn || ~scan_mode) begin
+    kq_rd <= 4'd0; kq_wr <= 4'd0; kq_n <= 5'd0;
+  end
+  if (~RESETBn) begin
+    // Back to the power-on value; see the repeat block for why.
+    { P0, kdata } <= 9'h0ff;
     m132 <= 1'b0;
+  end
+  else if (scan_mode) begin
+    // Oldest first: the head goes out on the acknowledge, ev_code joins the tail.
+    if (kbd_ack && kq_n != 5'd0) begin
+      { P0, kdata } <= kq[kq_rd];
+      kq_rd <= kq_rd + 4'd1;
+    end
+    else if (kbd_ack && !key_stb) m132 <= 1'b0;
+    if (key_stb && !kq_busy) begin
+      { P0, kdata } <= ev_code;
+      m132 <= 1'b1;
+    end
+    else if (key_stb && !ev_rpt && kq_n != KQ_DEPTH) begin
+      kq[kq_wr] <= ev_code;
+      kq_wr <= kq_wr + 4'd1;
+    end
+`ifdef VERILATOR
+    if (key_stb && kq_busy)
+      $display("KQ %s %03x behind %03x, %0d waiting",
+               (ev_rpt || kq_n == KQ_DEPTH) ? "drop" : "queue", ev_code, {P0, kdata}, kq_n);
+`endif
+    kq_n <= kq_n + ((key_stb && kq_busy && !ev_rpt && kq_n != KQ_DEPTH) ? 5'd1 : 5'd0)
+                 - ((kbd_ack && kq_n != 5'd0) ? 5'd1 : 5'd0);
+  end
+  else begin
+    // FM-7 code system: the newest code wins. Setting wins over clearing.
+    if (key_stb) begin
+      { P0, kdata } <= ev_code;
+      m132 <= 1'b1;
+    end
+    else if (kbd_ack) m132 <= 1'b0;
+  end
 end
 
 assign KSTROBEn = ~(m132 & ~m77[0]);
